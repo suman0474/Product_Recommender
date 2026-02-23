@@ -1426,7 +1426,7 @@ def build_requirements_schema_from_web(product_type: str) -> Dict[str, Any]:
         if final_schema and final_schema.get("mandatory_requirements"):
             logger.info(f"[BUILD] Retrieved saved schema from Azure for '{product_type}'")
             # Cache the proper schema format
-            schema_cache.set(product_type, final_schema)
+            schema_cache.put(product_type, final_schema)
             return final_schema
         else:
             logger.warning(f"[BUILD] Schema was not found in Azure after automation for '{product_type}', returning empty schema")
@@ -1436,7 +1436,7 @@ def build_requirements_schema_from_web(product_type: str) -> Dict[str, Any]:
                 "mandatory_requirements": {},
                 "optional_requirements": {}
             }
-            schema_cache.set(product_type, empty_schema)
+            schema_cache.put(product_type, empty_schema)
             return empty_schema
     except Exception as e:
         logger.error(f"[BUILD] Failed to retrieve schema from Azure: {e}")
@@ -1722,7 +1722,7 @@ def load_requirements_schema(product_type: str = None) -> Dict[str, Any]:
             print(f"[SCHEMA] Successfully loaded schema for '{product_type}'")
             # cache it
             try:
-                schema_cache.set(product_type, schema)
+                schema_cache.put(product_type, schema)
             except Exception:
                 pass
             return schema
@@ -1768,7 +1768,7 @@ def load_requirements_schema(product_type: str = None) -> Dict[str, Any]:
             
             # Cache the schema
             try:
-                schema_cache.set(product_type, built)
+                schema_cache.put(product_type, built)
             except Exception:
                 pass
             return built

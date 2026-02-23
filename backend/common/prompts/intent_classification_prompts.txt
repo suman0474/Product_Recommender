@@ -58,7 +58,8 @@ EDGE CASES:
 - Accessory with specs/ Instrument with specs -> SEARCH
 - Standards question without product specs -> CHAT
 - Uncertain CHAT vs SEARCH: specs present -> SEARCH
-- Uncertain SEARCH vs SOLUTION: 3+ instruments or system-level -> SOLUTION
+- Uncertain SEARCH vs SOLUTION: 3+ instruments AND system-level design required -> SOLUTION
+- General recommendations (e.g. "recommend some transmitters for my plant", "what sensors should I use") -> SEARCH or CHAT (NOT SOLUTION)
 - Simple greetings with no content -> GREETING
 
 OUTPUT FORMAT (JSON only):

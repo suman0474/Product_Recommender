@@ -6,6 +6,7 @@ Handles follow-up resolution and query context.
 """
 
 import logging
+import re
 import time
 from typing import Dict, List, Optional, Any
 from datetime import datetime
@@ -84,36 +85,61 @@ def get_history(session_id: str, limit: int = 10) -> List[ConversationEntry]:
 def is_follow_up_query(query: str, session_id: str) -> bool:
     """
     Detect if query is a follow-up to previous conversation.
-    
+
     Follow-up indicators:
     - Pronouns referring to previous context (it, this, that, they)
-    - Short queries (< 5 words) without explicit subject
+    - Short queries (< 5 words) without an explicit standalone subject
     - Comparison phrases (what about, how about, compared to)
+
+    Uses word-boundary matching for single-word pronouns to prevent false
+    positives: "it" inside "specification" or "transmitters" must not trigger.
     """
     history = get_history(session_id)
     if not history:
         return False
-    
+
     query_lower = query.lower().strip()
-    
-    # Pronoun patterns indicating follow-up
-    follow_up_indicators = [
-        "it", "this", "that", "they", "them", "those",
+
+    # Multi-word phrases are specific enough; substring check is fine.
+    MULTI_WORD_INDICATORS = [
         "what about", "how about", "compared to", "versus",
-        "and", "also", "too", "same", "similar",
-        "more", "less", "better", "worse",
         "which one", "the other", "another"
     ]
-    
-    for indicator in follow_up_indicators:
+    for indicator in MULTI_WORD_INDICATORS:
         if indicator in query_lower:
             return True
-    
-    # Short queries without explicit product/vendor names
+
+    # Single-word pronouns / connectors: require whole-word match to avoid
+    # false positives like "it" ⊂ "transmitters", "and" ⊂ "standard".
+    WORD_INDICATORS = [
+        "it", "this", "that", "they", "them", "those",
+        "also", "too", "same", "similar",
+        "more", "less", "better", "worse",
+    ]
+    for indicator in WORD_INDICATORS:
+        if re.search(r'\b' + re.escape(indicator) + r'\b', query_lower):
+            return True
+
+    # Short queries (<5 words) are often follow-ups *unless* they contain a
+    # standalone subject: a known brand name, model number, or standard code.
     words = query_lower.split()
     if len(words) < 5:
-        return True
-    
+        STANDALONE_SUBJECTS = [
+            # Major vendor / brand names
+            "rosemount", "yokogawa", "emerson", "honeywell", "siemens",
+            "endress", "hauser", "abb", "fisher", "krohne", "vega",
+            "ifm", "pepperl", "turck", "danfoss", "burkert",
+            "micro motion", "magnetrol", "wika", "fluke", "omega",
+            # Common model families
+            "3051", "ejx", "644", "dvc", "5400", "5300",
+            # Standards / safety bodies
+            "iec", "iso", "api", "atex", "iecex", "sil",
+            "isa", "asme", "nfpa", "ansi", "din",
+        ]
+        has_explicit_subject = any(kw in query_lower for kw in STANDALONE_SUBJECTS)
+        if not has_explicit_subject:
+            return True
+
     return False
 
 

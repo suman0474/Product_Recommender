@@ -35,7 +35,7 @@ class VendorAnalysis(BaseModel):
     vendor_matches: List[ProductMatch] = Field(description="Best products match from each vendor")
 
 class RankedProduct(BaseModel):
-    rank: int = Field(default=0, description="Overall ranking position")
+    rank: Union[int, str] = Field(default=0, description="Overall ranking position")
     product_name: str = Field(default="", description="Only the specific submodel/series name (e.g., 'STD800', 'SMV800') - just the short model identifier, not full descriptions")
     vendor: str = Field(default="", description="Vendor name")
     model_family: str = Field(default="", description="Model family/series name (e.g., '3051C', 'STD800') for more specific image searches")

@@ -123,16 +123,19 @@ RULES:
 - Include series/model hints where applicable
 - Maximum 5 parameters
 
+IMPORTANT: Generate parameters SPECIFIC to the {product_type}. Do NOT use generic examples.
+Consider the unique measurement principles, communication protocols, and industry applications for this exact product type.
+
 OUTPUT (JSON):
 {{
   "advanced_parameters": [
-    "AI-Powered Predictive Diagnostics (Series 3000+)",
-    "Wireless Mesh Networking (ISA100.11a)",
-    "Edge Computing Capability",
-    "Cybersecurity Suite (IEC 62443)",
-    "Energy Harvesting Mode"
+    "<parameter 1 specific to {product_type}>",
+    "<parameter 2 specific to {product_type}>",
+    "<parameter 3 specific to {product_type}>",
+    "<parameter 4 specific to {product_type}>",
+    "<parameter 5 specific to {product_type}>"
   ],
-  "innovation_justification": "<brief explanation>",
+  "innovation_justification": "<brief explanation of why these are relevant for {product_type}>",
   "total_count": <1-5>
 }}"""
 }

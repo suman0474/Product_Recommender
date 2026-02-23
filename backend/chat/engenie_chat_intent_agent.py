@@ -550,6 +550,21 @@ def _fast_path_classify(query_lower: str) -> Optional[Tuple[DataSource, float, s
         if re.search(pattern, query_lower):
             return DataSource.INDEX_RAG, 0.95, f"Fast-path: specific product identifier"
 
+    # Explicit document/standard extraction requests — checked BEFORE STANDARDS_RAG
+    # so "extract clauses for SIL-2" routes to DEEP_AGENT, not STANDARDS_RAG.
+    FAST_PATH_DEEP_AGENT = [
+        r"extract (the )?[a-z\s]+ from (the )?(standard|table|document)",
+        r"(clause|section|annex|table) [0-9]+",
+        # Extraction intent without "from the standard" suffix
+        r"extract (all |the )?(specification|requirement|spec)s? (clause|section|paragraph|table)s?",
+        r"(specification|requirement) clauses? (for|from|in|related to)",
+        r"clauses? (for|related to|from) (sil|iec|iso|atex|api)",
+        r"(all |the )?(specification|requirement)s? (clauses?|sections?|paragraphs?)",
+    ]
+    for pattern in FAST_PATH_DEEP_AGENT:
+        if re.search(pattern, query_lower):
+            return DataSource.DEEP_AGENT, 0.95, f"Fast-path: document extraction request"
+
     # Standard code references (e.g., "IEC 61508", "API 526", "SIL 3")
     FAST_PATH_STANDARDS = [
         r"(iec|iso|api|atex|iecex)\s*[0-9]{3,5}",
@@ -566,19 +581,11 @@ def _fast_path_classify(query_lower: str) -> Optional[Tuple[DataSource, float, s
         r"(i need|we need|looking for) (a |an )?(complete |integrated )?(solution|system|package)",
         r"(custody transfer|fiscal metering|burner management) (skid|system|package)",
         r"build (a|an) .*(control|safety|metering) system",
+        r"(create|develop|implement|engineer) (a |an |the )?(full |complete |new )?.*(dcs|plc|scada|control system|safety system)",
     ]
     for pattern in FAST_PATH_SOLUTION:
         if re.search(pattern, query_lower):
             return DataSource.SOLUTION, 0.95, f"Fast-path: solution/design request"
-
-    # Explicit document extraction requests
-    FAST_PATH_DEEP_AGENT = [
-        r"extract (the )?[a-z\s]+ from (the )?(standard|table|document)",
-        r"(clause|section|annex|table) [0-9]+",
-    ]
-    for pattern in FAST_PATH_DEEP_AGENT:
-        if re.search(pattern, query_lower):
-            return DataSource.DEEP_AGENT, 0.95, f"Fast-path: document extraction request"
 
     # Explicit vendor/procurement queries
     FAST_PATH_STRATEGY = [

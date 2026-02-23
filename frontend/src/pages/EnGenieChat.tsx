@@ -1044,23 +1044,25 @@ const EnGenieChat = () => {
             //     return; // ✅ BLOCKED - No API call made
             // }
 
-            // Map backend target_workflow to page names and create action buttons
-            const workflowPageMap: Record<string, { page: string; label: string; icon: string; description: string }> = {
-                'solution': {
+            // Only redirect to the Solution page when the query is explicitly a
+            // solution-design request. The classify-route classifier is tuned for
+            // page routing (not RAG routing) and produces too many false positives.
+            // Chat's own classify_query() handles all RAG routing correctly once
+            // a query reaches the backend — so the default is: send to chat.
+            //
+            // A query redirects to Solution ONLY when it matches an explicit
+            // design-intent verb + system/package noun pattern.
+            const SOLUTION_DESIGN_RE = /\b(design|build|create|develop|implement|engineer|specify|commission)\b.{0,60}\b(system|skid|package|unit|loop|solution|plant|facility|network|panel|cabinet)\b/i;
+            const isSolutionDesign = SOLUTION_DESIGN_RE.test(query);
+
+            const targetInfo = isSolutionDesign
+                ? {
                     page: 'solution',
                     label: '📋 Open Solution Page',
                     icon: '🔧',
                     description: 'This looks like a **complex solution** requiring multiple instruments.\n\nFor better results, I recommend using our **Solution** page.'
-                },
-                'instrument_identifier': {
-                    page: 'search',
-                    label: '🔍 Open Search Page',
-                    icon: '📦',
-                    description: 'This looks like a **product search** query.\n\nFor better results, I recommend using our **Search** page.'
-                }
-            };
-
-            const targetInfo = workflowPageMap[targetWorkflow];
+                  }
+                : null;
 
             // If backend suggests different page, show navigation button with actionButtons
             if (targetInfo) {

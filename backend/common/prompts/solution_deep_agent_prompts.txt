@@ -208,7 +208,7 @@ OUTPUT (JSON only):
       "strategy": "<procurement strategy or empty>",
       "specified_vendors": ["<vendor>"],
       "specified_model_families": ["<model>"],
-      "sample_input": "<A fully readable paragraph in proper sentence format describing the requirement, without any bracketed tags like [STANDARDS]>",
+      "sample_input": "<Description including ALL technical specs>",
       "inferred_specs": ["<spec: value - reasoning>"]
     }}
   ],
@@ -248,7 +248,7 @@ OUTPUT (JSON only):
       "specified_model_families": [],
       "parent_instrument_category": "<category of parent instrument>",
       "related_instrument": "<parent instrument name>",
-      "sample_input": "<A fully readable paragraph in proper sentence format describing the requirement, without any bracketed tags like [STANDARDS]>"
+      "sample_input": "<Description including ALL technical specs>"
     }}
   ],
   "summary": "<Brief accessories summary>"

@@ -133,7 +133,7 @@ def generate_no_results_message(query: str, session_id: str) -> str:
 def query_index_rag(query: str, session_id: str) -> Dict[str, Any]:
     """Query Index RAG for product information."""
     try:
-        from common.rag.index import run_index_rag_workflow
+        from common.index_rag.index_rag_workflow import run_index_rag_workflow
         
         result = run_index_rag_workflow(
             question=query,
@@ -171,14 +171,66 @@ def query_index_rag(query: str, session_id: str) -> Dict[str, Any]:
         return {"success": False, "source": "index_rag", "error": str(e)}
 
 
+def _standards_source_filter(query: str) -> Optional[List[str]]:
+    """
+    Derive a source_filter list from the query for Standards RAG.
+
+    Maps detected standards/product keywords to the document type keys
+    used by StandardsBlobRetriever (e.g. "safety", "pressure", "flow").
+    Returns None when nothing specific is detected (= search all docs).
+    """
+    q = query.lower()
+    types: List[str] = []
+
+    # Safety / certification standards → safety document
+    if any(kw in q for kw in ["sil", "functional safety", "sis", "emergency shutdown",
+                                "atex", "iecex", "iec 61508", "iec 61511", "hazardous"]):
+        types.append("safety")
+
+    # Product-type documents
+    if any(kw in q for kw in ["pressure", "transmitter", "gauge", "manometer"]):
+        types.append("pressure")
+    if any(kw in q for kw in ["temperature", "thermocouple", "rtd", "thermometer"]):
+        types.append("temperature")
+    if any(kw in q for kw in ["flow", "flowmeter", "coriolis", "ultrasonic flow", "magnetic flow"]):
+        types.append("flow")
+    if any(kw in q for kw in ["level", "radar level", "guided wave"]):
+        types.append("level")
+    if any(kw in q for kw in ["analytical", "analyzer", "ph meter", "conductivity", "gas chromatograph"]):
+        types.append("analytical")
+    if any(kw in q for kw in ["valve", "actuator", "control valve", "ball valve", "globe valve"]):
+        types.append("control_valves")
+    if any(kw in q for kw in ["calibration", "maintenance", "verification", "testing"]):
+        types.append("calibration")
+    if any(kw in q for kw in ["hart", "modbus", "profibus", "foundation fieldbus", "communication protocol"]):
+        types.append("communication")
+    if any(kw in q for kw in ["vibration", "condition monitoring", "asset health", "predictive maintenance"]):
+        types.append("condition_monitoring")
+    if any(kw in q for kw in ["accessory", "mounting", "cable gland", "bracket"]):
+        types.append("accessories")
+
+    # De-duplicate, return None when nothing matched (= all docs)
+    unique = list(dict.fromkeys(types))
+    return unique if unique else None
+
+
 def query_standards_rag(query: str, session_id: str) -> Dict[str, Any]:
     """Query Standards RAG for standards information."""
     try:
-        from common.rag.standards import run_standards_rag_workflow
-        
+        from common.standards.rag import run_standards_rag_workflow
+
+        # Build source_filter so retrieval is scoped to relevant documents
+        # instead of searching all 11 standards files every time.
+        source_filter = _standards_source_filter(query)
+        if source_filter:
+            logger.info(f"[ORCHESTRATOR] Standards RAG source_filter: {source_filter}")
+        else:
+            logger.info("[ORCHESTRATOR] Standards RAG: no filter — searching all documents")
+
         result = run_standards_rag_workflow(
             question=query,
-            session_id=session_id
+            session_id=session_id,
+            source_filter=source_filter
         )
         
         # Extract answer from final_response (the workflow returns full state)
@@ -219,7 +271,7 @@ def query_strategy_rag(
         Dict with success, answer, preferred_vendors, etc.
     """
     try:
-        from common.rag.strategy import run_strategy_rag_workflow
+        from common.strategy_rag.strategy_rag_workflow import run_strategy_rag_workflow
 
         # Build workflow parameters
         workflow_params = {
@@ -270,17 +322,46 @@ def query_deep_agent(query: str, session_id: str) -> Dict[str, Any]:
     """Query Deep Agent for detailed spec extraction."""
     try:
         from common.standards.generation import run_standards_deep_agent
-        
+
+        # Correct kwargs: user_requirement (not query=), session_id as positional kwarg
         result = run_standards_deep_agent(
-            query=query,
-            context={"session_id": session_id}
+            user_requirement=query,
+            session_id=session_id
         )
-        
+
+        # Correct response keys: result has "final_specifications" → "specifications"
+        # There is no "response" or "extracted_specs" key — compose answer from specs
+        final_specs_block = result.get("final_specifications", {})
+        specs = final_specs_block.get("specifications", {})
+        standards_analyzed = result.get("standards_analyzed", [])
+        specs_count = result.get("specs_count", len(specs))
+        status = result.get("status", "completed")
+
+        # Build a human-readable answer from the extracted specifications
+        if specs:
+            specs_lines = "\n".join(
+                f"- **{k}**: {v}" for k, v in list(specs.items())[:20]
+            )
+            standards_note = (
+                f"\n\n*Standards analyzed: {', '.join(standards_analyzed)}*"
+                if standards_analyzed else ""
+            )
+            answer = (
+                f"Extracted {specs_count} specifications from standards documents:\n\n"
+                f"{specs_lines}"
+                f"{standards_note}"
+            )
+        else:
+            answer = ""
+
         return {
-            "success": True,
+            "success": result.get("success", False) and bool(specs),
             "source": "deep_agent",
-            "answer": result.get("response", ""),
-            "extracted_specs": result.get("extracted_specs", {}),
+            "answer": answer,
+            "extracted_specs": specs,
+            "standards_analyzed": standards_analyzed,
+            "specs_count": specs_count,
+            "status": status,
             "data": result
         }
     except ImportError:
@@ -289,6 +370,42 @@ def query_deep_agent(query: str, session_id: str) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"[ORCHESTRATOR] Deep Agent error: {e}")
         return {"success": False, "source": "deep_agent", "error": str(e)}
+
+
+def query_solution(query: str, session_id: str) -> Dict[str, Any]:
+    """Query the Solution Deep Agent for system/package design requests."""
+    try:
+        from solution import run_solution_deep_agent
+
+        result = run_solution_deep_agent(
+            user_input=query,
+            session_id=session_id,
+        )
+
+        # Extract the final response text
+        answer = result.get("response", "") or result.get("answer", "")
+        if not answer:
+            # Fallback: compose from all_items if response is empty
+            items = result.get("all_items", [])
+            if items:
+                answer = f"Solution identified {len(items)} items: " + ", ".join(
+                    i.get("name", "Unknown") for i in items[:5]
+                )
+
+        return {
+            "success": bool(answer),
+            "source": "solution",
+            "answer": answer,
+            "solution_name": result.get("solution_name", ""),
+            "all_items": result.get("all_items", []),
+            "data": result,
+        }
+    except ImportError:
+        logger.warning("[ORCHESTRATOR] Solution Deep Agent not available")
+        return {"success": False, "source": "solution", "error": "Solution Deep Agent not available"}
+    except Exception as e:
+        logger.error(f"[ORCHESTRATOR] Solution Deep Agent error: {e}")
+        return {"success": False, "source": "solution", "error": str(e)}
 
 
 def query_llm_fallback(query: str, session_id: str) -> Dict[str, Any]:
@@ -342,7 +459,9 @@ def query_llm_fallback(query: str, session_id: str) -> Dict[str, Any]:
 def query_sources_parallel(
     query: str,
     sources: List[DataSource],
-    session_id: str
+    session_id: str,
+    strategy_refinery: Optional[str] = None,
+    strategy_product_type: Optional[str] = None
 ) -> Dict[str, Dict[str, Any]]:
     """
     Query multiple sources in parallel.
@@ -351,16 +470,23 @@ def query_sources_parallel(
         query: User query
         sources: List of DataSource to query
         session_id: Session ID for memory
+        strategy_refinery: Optional refinery name for Strategy RAG filtering
+        strategy_product_type: Optional product type for Strategy RAG filtering
         
     Returns:
         Dict mapping source name to result
     """
     source_funcs = {
-        DataSource.INDEX_RAG: query_index_rag,
-        DataSource.STANDARDS_RAG: query_standards_rag,
-        DataSource.STRATEGY_RAG: query_strategy_rag,
-        DataSource.DEEP_AGENT: query_deep_agent,
-        DataSource.LLM: query_llm_fallback
+        DataSource.INDEX_RAG: lambda q, sid: query_index_rag(q, sid),
+        DataSource.STANDARDS_RAG: lambda q, sid: query_standards_rag(q, sid),
+        DataSource.STRATEGY_RAG: lambda q, sid: query_strategy_rag(
+            q, sid,
+            refinery=strategy_refinery,
+            product_type=strategy_product_type
+        ),
+        DataSource.DEEP_AGENT: lambda q, sid: query_deep_agent(q, sid),
+        DataSource.SOLUTION: lambda q, sid: query_solution(q, sid),
+        DataSource.LLM: lambda q, sid: query_llm_fallback(q, sid)
     }
     
     results = {}
@@ -576,7 +702,6 @@ def run_engenie_chat_query(
     """
     logger.info(f"[ORCHESTRATOR] Processing query: {query[:100]}...")
 
-
     # ============================================================================
     # PHASE 3: ORCHESTRATOR PRE-LLM CHECK - ENABLED
     # Block invalid/out-of-domain queries BEFORE expensive RAG+LLM operations
@@ -639,8 +764,13 @@ def run_engenie_chat_query(
         logger.info(f"[ORCHESTRATOR] Detected follow-up query")
         resolved_query = resolve_follow_up(query, session_id)
 
-    # Step 2: Intent classification
-    primary_source, confidence, reasoning = classify_query(resolved_query)
+    # Step 2: Intent classification — always classify the ORIGINAL query.
+    # The resolved_query prepends full conversation history (~600 chars) which
+    # confuses the fast-path classifier: vendor names from prior answers (e.g.
+    # "Rosemount") match the brand+model fast-path and force index_rag on every
+    # follow-up regardless of actual intent.  Classification on the original
+    # query routes correctly; resolved_query is passed to the RAGs for context.
+    primary_source, confidence, reasoning = classify_query(query)
     logger.info(f"[ORCHESTRATOR] Classification: {primary_source.value} ({confidence:.2f}) - {reasoning}")
 
     # Step 3: Determine sources to query
@@ -656,7 +786,21 @@ def run_engenie_chat_query(
     logger.info(f"[ORCHESTRATOR] Primary sources to query: {[s.value for s in sources]}")
 
     # Step 4: Query primary sources (without LLM)
-    results = query_sources_parallel(resolved_query, sources, session_id)
+    # For Strategy RAG: extract refinery/product_type so filtering is applied
+    # even for single questions (multi-question path already does this via context)
+    strategy_refinery = None
+    strategy_product_type = None
+    if DataSource.STRATEGY_RAG in sources:
+        strategy_refinery = extract_refinery(resolved_query)
+        strategy_product_type = extract_product_type(resolved_query)
+        if strategy_refinery:
+            logger.info(f"[ORCHESTRATOR] Single-question Strategy RAG refinery: {strategy_refinery}")
+
+    results = query_sources_parallel(
+        resolved_query, sources, session_id,
+        strategy_refinery=strategy_refinery,
+        strategy_product_type=strategy_product_type
+    )
 
     # Step 5: Check if we need LLM fallback
     # OPTIMIZATION: Only call LLM if RAG didn't provide a good answer
@@ -822,6 +966,7 @@ def _execute_questions_parallel(
             product_type=ctx.get("product_type")
         ),
         DataSource.DEEP_AGENT: lambda q, ctx: query_deep_agent(q, session_id),
+        DataSource.SOLUTION: lambda q, ctx: query_solution(q, session_id),
         DataSource.LLM: lambda q, ctx: query_llm_fallback(q, session_id),
     }
 
@@ -1039,6 +1184,7 @@ __all__ = [
     'query_standards_rag',
     'query_strategy_rag',
     'query_deep_agent',
+    'query_solution',
     'query_llm_fallback',
     'query_sources_parallel',
     'merge_results'

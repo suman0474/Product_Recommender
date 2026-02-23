@@ -61,7 +61,7 @@ except ImportError:
             
 import threading
 import csv
-from fuzzywuzzy import fuzz, process
+
 
 from functools import wraps
 from dotenv import load_dotenv

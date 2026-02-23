@@ -47,6 +47,12 @@ import time
 # LangGraph imports
 from langgraph.graph import StateGraph, START, END
 
+# [FIX Feb 2026] Import BoundedCache for session-isolated caching with TTL/LRU
+from common.infrastructure.caching.bounded_cache import get_or_create_cache, BoundedCache
+
+# [FIX Feb 2026] Import ExecutionContext for thread context propagation
+from common.infrastructure.context import get_context, execution_context
+
 # Configure logging
 logger = logging.getLogger(__name__)
 
@@ -372,21 +378,37 @@ def _node_run_parallel_analysis(state: VendorAnalysisDeepAgentState) -> dict:
 
     from core.chaining import to_dict_if_pydantic
 
+    # [FIX Feb 2026 #2] Capture parent context for propagation to worker threads
+    parent_ctx = get_context()
+    session_id = state.get("session_id", "unknown")
+
+    def run_vendor_analysis_with_context(vendor: str, data: Dict[str, Any]):
+        """
+        Wrapper that propagates ExecutionContext to worker thread.
+        This ensures logging, caching, and tracing have correct session/workflow IDs.
+        """
+        if parent_ctx:
+            with execution_context(parent_ctx):
+                return tool._analyze_vendor(
+                    components, requirements_str, vendor, data,
+                    applicable_standards, standards_specs
+                )
+        else:
+            # Fallback: run without context (legacy behavior)
+            return tool._analyze_vendor(
+                components, requirements_str, vendor, data,
+                applicable_standards, standards_specs
+            )
+
     actual_workers = min(len(vendor_payloads), tool.max_workers)
-    logger.info("[VendorAnalysisDeepAgent] Using %d workers for %d vendors", actual_workers, len(vendor_payloads))
+    logger.info("[VendorAnalysisDeepAgent] Using %d workers for %d vendors (session: %s)",
+                actual_workers, len(vendor_payloads), session_id[:16] if session_id else "N/A")
 
     with ThreadPoolExecutor(max_workers=actual_workers) as executor:
         futures = {}
         for vendor, data in vendor_payloads.items():
-            future = executor.submit(
-                tool._analyze_vendor,
-                components,
-                requirements_str,
-                vendor,
-                data,
-                applicable_standards,
-                standards_specs,
-            )
+            # [FIX Feb 2026 #2] Use wrapper function for context propagation
+            future = executor.submit(run_vendor_analysis_with_context, vendor, data)
             futures[future] = vendor
 
         for future in as_completed(futures):
@@ -597,15 +619,19 @@ def _node_assemble_result(state: VendorAnalysisDeepAgentState) -> dict:
     if excluded_vendors:
         logger.info("[VendorAnalysisDeepAgent] Excluded by strategy: %s", [e["vendor"] for e in excluded_vendors])
 
-    # Cache successful result on the tool instance (keyed by the same md5 the old code used)
+    # [FIX Feb 2026 #1] Cache with session_id included for isolation
     try:
         import hashlib
+        session_id = state.get("session_id", "global")
         structured_requirements = state.get("structured_requirements", {})
+        # Include session_id in cache key to prevent cross-session contamination
         cache_key = hashlib.md5(
-            f"{product_type}:{json.dumps(structured_requirements, sort_keys=True, default=str)}".encode()
+            f"{session_id}:{product_type}:{json.dumps(structured_requirements, sort_keys=True, default=str)}".encode()
         ).hexdigest()
-        tool._response_cache[cache_key] = result
-        logger.info("[VendorAnalysisDeepAgent] ✓ Cached result (key: %s...)", cache_key[:8])
+        # [FIX Feb 2026 #6] Use BoundedCache .set() method
+        tool._response_cache.set(cache_key, result)
+        logger.info("[VendorAnalysisDeepAgent] ✓ Cached result (key: %s..., session: %s)",
+                    cache_key[:8], session_id[:16] if session_id else "global")
     except Exception as cache_write_error:
         logger.warning("[VendorAnalysisDeepAgent] Failed to cache result: %s", cache_write_error)
 
@@ -720,6 +746,10 @@ class VendorAnalysisDeepAgent:
     All helper methods (_analyze_vendor, _format_requirements, etc.) are encapsulated here.
     """
 
+    # [FIX Feb 2026 #6] Class-level bounded cache shared across instances
+    # Prevents unbounded memory growth with TTL-based eviction
+    _response_cache: BoundedCache = None
+
     def __init__(self, max_workers: int = 10, max_retries: int = 3):
         """
         Initialize the vendor analysis deep agent.
@@ -730,7 +760,15 @@ class VendorAnalysisDeepAgent:
         """
         self.max_workers = max_workers
         self.max_retries = max_retries
-        self._response_cache = {}
+
+        # [FIX Feb 2026 #6] Use bounded cache with TTL/LRU instead of unbounded dict
+        if VendorAnalysisDeepAgent._response_cache is None:
+            VendorAnalysisDeepAgent._response_cache = get_or_create_cache(
+                name="vendor_analysis_response",
+                max_size=200,           # Max 200 cached results
+                ttl_seconds=1800        # 30 minute TTL
+            )
+
         logger.info("[VendorAnalysisDeepAgent] Initialized with max_workers=%d", max_workers)
 
     @timed_execution("VENDOR_ANALYSIS", threshold_ms=45000)
@@ -782,18 +820,22 @@ class VendorAnalysisDeepAgent:
         logger.info("[VendorAnalysisTool] Product type: %s", product_type)
         logger.info("[VendorAnalysisTool] Session: %s", session_id or "N/A")
 
-        # --- Response cache check (same md5 key as before) ---
+        # [FIX Feb 2026 #1] Include session_id in cache key for isolation
         import hashlib
+        effective_session = session_id or "global"
         try:
             cache_key = hashlib.md5(
-                f"{product_type}:{json.dumps(structured_requirements, sort_keys=True, default=str)}".encode()
+                f"{effective_session}:{product_type}:{json.dumps(structured_requirements, sort_keys=True, default=str)}".encode()
             ).hexdigest()
 
-            if cache_key in self._response_cache:
-                logger.info("[VendorAnalysisTool] ✓ Cache hit — returning cached result (saves ~200-600s)")
+            # [FIX Feb 2026 #6] Use BoundedCache .get() method
+            cached_result = self._response_cache.get(cache_key)
+            if cached_result is not None:
+                logger.info("[VendorAnalysisTool] ✓ Cache hit (session: %s) — returning cached result",
+                            effective_session[:16])
                 if issue_debug:
                     issue_debug.cache_hit("vendor_analysis", cache_key[:16])
-                return self._response_cache[cache_key]
+                return cached_result
         except Exception as cache_check_error:
             logger.warning("[VendorAnalysisTool] Cache check failed: %s (continuing)", cache_check_error)
 

@@ -312,7 +312,7 @@ class DeepAgenticWorkflowOrchestrator:
     @property
     def validation_tool(self):
         if self._validation_tool is None:
-            from common.tools.validation_tool import ValidationTool
+            from search.validation_tool import ValidationTool
             self._validation_tool = ValidationTool(enable_ppi=self.enable_ppi)
         return self._validation_tool
 

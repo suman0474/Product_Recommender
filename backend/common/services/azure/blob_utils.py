@@ -50,6 +50,14 @@ class AzureBlobFileManager:
             blob_service_client = BlobServiceClient.from_connection_string(connection_string)
             container_client = blob_service_client.get_container_client(container_name)
             
+            # Ensure container exists
+            try:
+                if not container_client.exists():
+                    container_client.create_container()
+                    logger.info(f"Auto-created Azure Blob container: {container_name}")
+            except Exception as e:
+                logger.warning(f"Could not verify/create container {container_name}: {e}")
+            
             # Cache the connection as a dictionary for compatibility with property accessors
             self._conn = {
                 'service_client': blob_service_client,

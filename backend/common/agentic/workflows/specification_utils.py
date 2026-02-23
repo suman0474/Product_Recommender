@@ -567,54 +567,20 @@ def build_sample_input(item: dict, project_name: str = "Project", max_specs: int
     for g in groups:
         groups[g] = groups[g][:8]
 
-    # ── Step 3: LLM generation of proper sentence format ──────────────────
-    spec_dict = {k: val for k, val, _ in capped_entries}
-    purpose = item.get("purpose") or item.get("solution_purpose") or item.get("related_instrument") or "N/A"
-    
-    prompt_text = """You are a technical specification writer. Rewrite the following structured product specifications into a professional, cohesive, and easily readable paragraph consisting of completely proper sentences.
-
-PRODUCT: {name}
-CATEGORY: {category}
-PROJECT: {project_name}
-PURPOSE: {purpose}
-SPECIFICATIONS:
-{specs}
-
-RULES:
-- Combine related specifications logically (e.g., grouping all temperature settings, grouping all materials).
-- Remove any duplicate information or redundant terms.
-- NEVER use bracketed tags like [STANDARDS] or [INFERRED].
-- Write proper, grammatically correct sentences without bullet points or lists (e.g., "A Coriolis Mass Flow Meter is required for this solution. It should be suitable for hydrocarbon service...").
-- Do NOT output bullet points or lists. Only output the final continuous paragraph text.
-- Do NOT include any introductory or concluding conversational text (e.g., "Here is the paragraph:").
-"""
-
-    try:
-        from langchain_core.prompts import ChatPromptTemplate
-        from langchain_core.output_parsers import StrOutputParser
-        from common.utils.llm_manager import get_cached_llm
-        from common.config import AgenticConfig
-        
-        llm = get_cached_llm(model=AgenticConfig.FLASH_MODEL, temperature=0.1)
-        prompt = ChatPromptTemplate.from_template(prompt_text)
-        chain = prompt | llm | StrOutputParser()
-        
-        result = chain.invoke({
-            "name": name,
-            "category": category,
-            "project_name": project_name,
-            "purpose": purpose,
-            "specs": json.dumps(spec_dict, indent=2)
-        })
-        
-        if result and len(result.strip()) > 10:
-            return result.strip()
-    except Exception as e:
-        logger.error(f"[SAMPLE_INPUT] LLM generation failed for {name}: {e}")
-        # Down-grading to fallback programmatic string construction
-
-    # Fallback: Assemble natural language description programmatically
+    # ── Step 3: Assemble natural language description programmatically ─────────
     parts = [f"{name}"]
+    
+    def deduplicate(lst: list) -> list:
+        seen = set()
+        res = []
+        for v in lst:
+            # removing standard tags brackets if any crept through
+            cleaned_v = v.replace("[STANDARDS]", "").replace("[INFERRED]", "").replace("[LLM]", "").replace("[USER]", "")
+            cleaned_v = cleaned_v.strip()
+            if cleaned_v and cleaned_v.lower() not in seen:
+                seen.add(cleaned_v.lower())
+                res.append(cleaned_v)
+        return res
 
     # Service / application / Purpose
     purpose = item.get("purpose") or item.get("solution_purpose") or item.get("related_instrument")
@@ -622,26 +588,39 @@ RULES:
         service_parts = groups["service"]
         if purpose and purpose not in service_parts:
             service_parts.insert(0, purpose)
-        parts.append(f"for {', '.join(service_parts)}")
+        service_parts = deduplicate(service_parts)
+        if service_parts:
+            parts.append(f"for {', '.join(service_parts)}")
 
     # Materials
     if groups["materials"]:
-        parts.append(f"with {', '.join(groups['materials'])}")
+        materials_parts = deduplicate(groups['materials'])
+        if materials_parts:
+            parts.append(f"with {', '.join(materials_parts)}")
 
     # Ranges / ratings
     if groups["ranges"]:
-        parts.append(f"rated at {', '.join(groups['ranges'])}")
+        ranges_parts = deduplicate(groups['ranges'])
+        if ranges_parts:
+            parts.append(f"rated at {', '.join(ranges_parts)}")
 
     # Communication
     if groups["communication"]:
-        parts.append(f"using {', '.join(groups['communication'])}")
+        comm_parts = deduplicate(groups['communication'])
+        if comm_parts:
+            parts.append(f"using {', '.join(comm_parts)}")
 
     # Certifications
     if groups["certifications"]:
-        parts.append(f"certified {', '.join(groups['certifications'])}")
+        cert_parts = deduplicate(groups['certifications'])
+        if cert_parts:
+            parts.append(f"certified {', '.join(cert_parts)}")
 
     # Features (remaining)
     if groups["features"]:
-        parts.append(f"with {', '.join(groups['features'][:6])}")
+        feat_parts = deduplicate(groups['features'][:6])
+        if feat_parts:
+            parts.append(f"with {', '.join(feat_parts)}")
 
-    return " ".join(parts) + "."
+    description_string = " ".join(parts) + "."
+    return description_string

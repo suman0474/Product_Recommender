@@ -319,7 +319,7 @@ class SessionOrchestrator:
             return None
 
     @debug_log("WORKFLOW")
-    def heartbeat(self, main_thread_id: str) -> bool:
+    def heartbeat(self, main_thread_id: str) -> Dict[str, Any]:
         """
         Update session's last activity (called every 5 minutes from frontend)
 
@@ -327,7 +327,15 @@ class SessionOrchestrator:
             main_thread_id: Session ID from frontend
 
         Returns:
-            True if session exists and was updated, False otherwise
+            Dict with:
+                - success: True if session was updated, False otherwise
+                - status: "active", "not_found", "expired", or "inactive"
+                - session_id: The session ID
+                - message: Human-readable status message
+
+        [FIX Feb 2026 #8] Changed from bool to dict for structured response.
+        This helps debug session lifecycle issues and allows frontend to
+        distinguish between different failure reasons.
 
         Use Case:
             Frontend calls /sessions/heartbeat every 5 minutes to keep session alive.
@@ -335,16 +343,53 @@ class SessionOrchestrator:
         """
         with self._lock:
             session = self._sessions.get(main_thread_id)
-            if session and session.active:
-                session.update_activity()
-                logger.debug(f"[SESSION_ORCHESTRATOR] Heartbeat: {main_thread_id}")
-                return True
-            else:
+
+            if session is None:
                 logger.warning(
-                    f"[SESSION_ORCHESTRATOR] Heartbeat for non-existent/inactive session: "
+                    f"[SESSION_ORCHESTRATOR] Heartbeat for non-existent session: "
                     f"{main_thread_id}"
                 )
-                return False
+                return {
+                    "success": False,
+                    "status": "not_found",
+                    "session_id": main_thread_id,
+                    "message": "Session not found. Please create a new session."
+                }
+
+            if not session.active:
+                logger.warning(
+                    f"[SESSION_ORCHESTRATOR] Heartbeat for inactive session: "
+                    f"{main_thread_id}"
+                )
+                return {
+                    "success": False,
+                    "status": "inactive",
+                    "session_id": main_thread_id,
+                    "message": "Session is inactive."
+                }
+
+            if session.is_expired():
+                logger.warning(
+                    f"[SESSION_ORCHESTRATOR] Heartbeat for expired session: "
+                    f"{main_thread_id}"
+                )
+                return {
+                    "success": False,
+                    "status": "expired",
+                    "session_id": main_thread_id,
+                    "message": "Session has expired. Please create a new session."
+                }
+
+            # Session is valid - update activity
+            session.update_activity()
+            logger.debug(f"[SESSION_ORCHESTRATOR] Heartbeat: {main_thread_id}")
+            return {
+                "success": True,
+                "status": "active",
+                "session_id": main_thread_id,
+                "last_activity": session.last_activity.isoformat(),
+                "message": "Heartbeat received"
+            }
 
     @debug_log("WORKFLOW")
     def end_session(self, main_thread_id: str) -> Optional[SessionContext]:

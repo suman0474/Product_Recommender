@@ -2280,6 +2280,8 @@ def product_search():
         provided_requirements = data.get('user_provided_fields') or data.get('provided_requirements')
         user_decision = data.get('user_decision')
         current_phase = data.get('current_phase')
+        auto_mode = data.get('auto_mode', False)
+        source_workflow = data.get('source_workflow', 'direct')
 
         # Optional item context (from solution workflow BOM enrichment)
         item_thread_id = data.get('item_thread_id')
@@ -2303,9 +2305,10 @@ def product_search():
                 expected_product_type=product_type_hint,
                 user_provided_fields=provided_requirements,
                 enable_ppi=True,
-                auto_mode=True,
+                auto_mode=auto_mode,
                 user_decision=user_decision,
-                current_phase=current_phase
+                current_phase=current_phase,
+                source_workflow=source_workflow
             )
 
         # Map tool-based workflow result to expected API response shape.

@@ -35,7 +35,7 @@ class IntentResult:
     is_solution: bool
     confidence: float  # 0.0 - 1.0
     method: str  # "fast_reject", "semantic", "keyword", "contextual", "hybrid"
-    intent_type: str  # "solution", "chat", "product_search", "modification", "comparison"
+    intent_type: str  # "solution", "chat", "unknown", "modification", "comparison"
     domain: str  # Detected domain (e.g., "Oil & Gas")
     industry: str  # Detected industry
     solution_indicators: List[str]  # What triggered solution classification
@@ -82,18 +82,6 @@ Examples of Chat workflow inputs:
 - Define accuracy vs precision
 - Show me Rosemount 3051 specifications
 - What is a thermowell used for?
-"""
-
-# What the Search/Instrument Identifier workflow handles (single-product signal)
-_SEARCH_CONTEXT = """
-The Search workflow handles requests for a single specific instrument or accessory
-with technical specifications. The user provides measurable requirements for one product.
-
-Examples of Search workflow inputs:
-- Pressure transmitter 0-100 bar, 4-20mA HART output, flanged
-- Flow meter DN50, Modbus, 0.1% accuracy
-- RTD temperature sensor Pt100, -40 to 200C, 1/2 NPT
-- 3-valve manifold for DP transmitter, 316 SS, 6000 PSI
 """
 
 
@@ -276,11 +264,11 @@ class SolutionIntentClassifier:
             ]
 
             non_solution_chunks = [
-                line.strip() for line in (_CHAT_CONTEXT + _SEARCH_CONTEXT).strip().splitlines()
+                line.strip() for line in _CHAT_CONTEXT.strip().splitlines()
                 if line.strip() and not line.strip().startswith("-") and len(line.strip()) > 20
             ]
             non_solution_chunks += [
-                line.strip().lstrip("- ") for line in (_CHAT_CONTEXT + _SEARCH_CONTEXT).strip().splitlines()
+                line.strip().lstrip("- ") for line in _CHAT_CONTEXT.strip().splitlines()
                 if line.strip().startswith("-") and len(line.strip()) > 20
             ]
 
@@ -660,7 +648,7 @@ class SolutionIntentClassifier:
         elif any(kw in input_lower for kw in ["compare", "versus", "vs", "difference"]):
             intent_type = "comparison"
         else:
-            intent_type = "product_search"
+            intent_type = "unknown"
 
         result = IntentResult(
             is_solution=is_solution,

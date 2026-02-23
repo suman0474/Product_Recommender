@@ -57,6 +57,8 @@ from common.infrastructure.context import (
     ExecutionContext,
     execution_context,
     get_context,
+    set_context,      # [FIX Feb 2026 #4] Added for proper context registration
+    clear_context,    # [FIX Feb 2026 #4] Added for proper context cleanup
     get_session_id as ctx_get_session_id
 )
 
@@ -76,6 +78,7 @@ def run_product_search_workflow(
     ctx: Optional["ExecutionContext"] = None,
     user_decision: Optional[str] = None,
     current_phase: Optional[str] = None,
+    source_workflow: Optional[str] = "direct",
     **kwargs
 ) -> Dict[str, Any]:
     """
@@ -112,12 +115,18 @@ def run_product_search_workflow(
     """
     import uuid
 
+    # Fix frontend parameter mismatch: if the frontend sends a user_decision but no
+    # user_input, assign the user_decision to user_input so downstream nodes work.
+    if user_decision and not user_input:
+        user_input = user_decision
+
     # ═══════════════════════════════════════════════════════════════════════════
     # CONTEXT RESOLUTION: Prefer ExecutionContext, fallback to session_id
     # ═══════════════════════════════════════════════════════════════════════════
 
     # Try to get context from: 1) parameter, 2) thread-local storage, 3) create from session_id
     effective_ctx = ctx or get_context()
+    context_was_created = False  # [FIX Feb 2026 #4] Track if we created the context
 
     if effective_ctx:
         # Use ExecutionContext for isolation
@@ -138,7 +147,11 @@ def run_product_search_workflow(
             workflow_type="product_search",
             workflow_id=workflow_thread_id
         )
-        logger.info(f"[ProductSearch] Created ExecutionContext from session_id: {session_id}")
+
+        # [FIX Feb 2026 #4] Set context to thread-local storage so nested calls can access it
+        set_context(effective_ctx)
+        context_was_created = True
+        logger.info(f"[ProductSearch] Created and registered ExecutionContext: {session_id}")
 
     logger.info(f"[ProductSearch] Starting workflow for session: {session_id}")
 
@@ -153,17 +166,19 @@ def run_product_search_workflow(
         from search.validation_tool import _get_session_context, _cache_session_context
         cached_context = _get_session_context(session_id) or {}
         advanced_specs_presented = cached_context.get("advanced_specs_presented", False)
-        
+        hitl_prompt_shown = cached_context.get("hitl_prompt_shown", False)
+
         normalized_input = user_input.lower().strip()
         is_hitl_no_response = normalized_input in ["no", "n", "none"] or normalized_input.startswith("no ")
         is_hitl_yes_response = normalized_input in ["yes", "y", "sure", "yeah", "yep"]
-        
+
         validation_result = None
-        
-        if advanced_specs_presented or current_phase in ["advanced_specs_discovered", "await_advanced_selection"]:
+
+        if advanced_specs_presented or hitl_prompt_shown or current_phase in ["advanced_specs_discovered", "await_advanced_selection"]:
             if is_hitl_no_response or user_decision == "no":
                 logger.info("[ProductSearch] User declined advanced specs, proceeding directly to analysis")
                 cached_context["advanced_specs_presented"] = False
+                cached_context["hitl_prompt_shown"] = True  # Mark HITL as complete (NOT False!) to skip re-prompting
                 _cache_session_context(session_id, cached_context)
                 
                 current_schema = cached_context.get("schema")
@@ -180,28 +195,37 @@ def run_product_search_workflow(
                     "provided_requirements": user_provided_fields or cached_context.get("provided_requirements", {})
                 }
             elif is_hitl_yes_response or user_decision == "yes":
-                logger.info("[ProductSearch] User accepted advanced specs, prompting for input")
-                
-                current_schema = cached_context.get("schema")
-                if not current_schema and expected_product_type:
-                    from common.tools.schema_tools import load_schema_tool
-                    schema_res = load_schema_tool(expected_product_type)
-                    current_schema = schema_res.get("schema", {}) if isinstance(schema_res, dict) else {}
+                if advanced_specs_presented or current_phase in ["advanced_specs_discovered"]:
+                    logger.info("[ProductSearch] User accepted advanced specs, prompting for input")
 
-                return {
-                    "success": True,
-                    "response": "Please type the names or details of the advanced specifications you'd like to add.",
-                    "response_data": {
-                        "product_type": cached_context.get("product_type", expected_product_type),
-                        "schema": current_schema or {},
-                        "provided_requirements": user_provided_fields or cached_context.get("provided_requirements", {}),
-                        "advanced_parameters": cached_context.get("advanced_parameters", []),
-                        "missing_fields": [],
-                        "awaiting_user_input": True,
-                        "current_phase": "collect_advanced_specs",
-                        "validation_bypassed": True
+                    # Reset HITL flags
+                    cached_context["hitl_prompt_shown"] = False
+                    cached_context["advanced_specs_presented"] = True  # Mark that we're in advanced specs collection
+                    _cache_session_context(session_id, cached_context)
+
+                    current_schema = cached_context.get("schema")
+                    if not current_schema and expected_product_type:
+                        from common.tools.schema_tools import load_schema_tool
+                        schema_res = load_schema_tool(expected_product_type)
+                        current_schema = schema_res.get("schema", {}) if isinstance(schema_res, dict) else {}
+
+                    return {
+                        "success": True,
+                        "response": "Please type the names or details of the advanced specifications you'd like to add.",
+                        "response_data": {
+                            "product_type": cached_context.get("product_type", expected_product_type),
+                            "schema": current_schema or {},
+                            "provided_requirements": user_provided_fields or cached_context.get("provided_requirements", {}),
+                            "advanced_parameters": cached_context.get("advanced_parameters", []),
+                            "missing_fields": [],
+                            "awaiting_user_input": True,
+                            "current_phase": "collect_advanced_specs",
+                            "validation_bypassed": True
+                        }
                     }
-                }
+                else:
+                    logger.info("[ProductSearch] User wants advanced specs discovery. Falling through to ValidationTool.")
+                    pass
             else:
                 # User provided specifications directly instead of yes/no
                 logger.info("[ProductSearch] User provided advanced specs directly, routing to validation")
@@ -247,7 +271,8 @@ def run_product_search_workflow(
                 user_input=user_input,
                 expected_product_type=expected_product_type,
                 session_id=session_id,
-                enable_standards_enrichment=enable_ppi
+                enable_standards_enrichment=enable_ppi,
+                source_workflow=source_workflow
             )
 
         # ═══════════════════════════════════════════════════════════════════════════
@@ -331,6 +356,56 @@ def run_product_search_workflow(
                     "provided_requirements": validation_result.get("provided_requirements", {}),
                     "awaiting_user_input": True,
                     "current_phase": "validation",
+                    "ranked_products": [],
+                    "vendor_matches": {}
+                }
+            }
+
+        # ═══════════════════════════════════════════════════════════════════════════
+        # HITL PROMPT FOR VALID RESULTS (when auto_mode=False)
+        # Even when validation passes, ask user if they want to add advanced specs
+        # This ensures the user always gets the YES/NO prompt before vendor analysis
+        # ═══════════════════════════════════════════════════════════════════════════
+        
+        # Re-fetch cached_context because ValidationTool may have overwritten it
+        # for a new product, clearing the stale hitl_prompt_shown state.
+        from search.validation_tool import _get_session_context
+        cached_context = _get_session_context(session_id) or {}
+        
+        if not auto_mode and not cached_context.get("hitl_prompt_shown"):
+            product_type = validation_result.get("product_type", expected_product_type)
+            hitl_message = validation_result.get("hitl_message")
+
+            # Generate HITL message if not already present
+            if not hitl_message:
+                num_provided = len(validation_result.get("provided_requirements", {}))
+                hitl_message = (
+                    f"I've extracted {num_provided} specification(s) for **{product_type}**.\n\n"
+                    f"All required specifications have been provided.\n\n"
+                    f"Would you like to add more advanced specifications for better matching, "
+                    f"or shall I proceed with the search?\n\n"
+                    f"Reply **'YES'** to add advanced specifications, or **'NO'** to continue with the search."
+                )
+
+            # Mark HITL prompt as shown in cache
+            cached_context["hitl_prompt_shown"] = True
+            cached_context["product_type"] = product_type
+            cached_context["schema"] = validation_result.get("schema", {})
+            cached_context["provided_requirements"] = validation_result.get("provided_requirements", {})
+            _cache_session_context(session_id, cached_context)
+
+            logger.info(f"[ProductSearch] Showing HITL prompt (auto_mode=False): {len(hitl_message)} chars")
+
+            return {
+                "success": True,
+                "response": hitl_message,
+                "response_data": {
+                    "product_type": product_type,
+                    "schema": validation_result.get("schema", {}),
+                    "missing_fields": validation_result.get("missing_fields", []),
+                    "provided_requirements": validation_result.get("provided_requirements", {}),
+                    "awaiting_user_input": True,
+                    "current_phase": "await_advanced_selection",
                     "ranked_products": [],
                     "vendor_matches": {}
                 }
@@ -433,6 +508,9 @@ def run_product_search_workflow(
         # ═══════════════════════════════════════════════════════════════════════════
         # FIX: Always clear request context to prevent leakage to other requests
         # ═══════════════════════════════════════════════════════════════════════════
+        # [FIX Feb 2026 #4] Clear ExecutionContext if we created it
+        if context_was_created:
+            clear_context()
         clear_request_context()
 
 

@@ -26,6 +26,7 @@ Classify the user's intent into EXACTLY ONE of the following types:
 - "concise_bom"    : User explicitly wants a short/concise bill of materials
 - "reset"          : User wants to clear the session and start fresh
 - "router_needed"  : The request is not related to solutions (e.g. product search, general chat)
+- "invalid_input"  : The input is gibberish, irrelevant, or lacks any useful data to identify instruments and accessories
 
 Return a JSON object with the following fields:
 {{
@@ -55,7 +56,7 @@ Apply the requested modifications and return the updated BOM data as a JSON obje
       "category": "<category>",
       "quantity": <quantity>,
       "specifications": {{}},
-      "sample_input": "<A fully readable paragraph in proper sentence format describing the requirement, without any bracketed tags like [STANDARDS]>",
+      "sample_input": "<updated sample input string>",
       "purpose": "<purpose>"
     }}
   ],

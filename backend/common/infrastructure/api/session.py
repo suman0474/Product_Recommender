@@ -169,14 +169,15 @@ def heartbeat():
         return api_response(False, error="main_thread_id is required", status_code=400)
 
     orchestrator = get_session_orchestrator()
-    success = orchestrator.heartbeat(main_thread_id)
+    # [FIX Feb 2026 #8] Use structured heartbeat response
+    result = orchestrator.heartbeat(main_thread_id)
 
-    if success:
-        session_ctx = orchestrator.get_session_context(main_thread_id)
+    if result.get("success"):
         return api_response(True, data={
             "main_thread_id": main_thread_id,
-            "last_activity": session_ctx.last_activity.isoformat() if session_ctx else None,
-            "message": "Heartbeat received"
+            "last_activity": result.get("last_activity"),
+            "message": result.get("message", "Heartbeat received"),
+            "status": result.get("status", "active")
         })
     else:
         # Return 200 with session_expired flag instead of 404
@@ -186,8 +187,9 @@ def heartbeat():
             data={
                 "main_thread_id": main_thread_id,
                 "last_activity": None,
-                "message": "Session not found or expired",
-                "session_expired": True
+                "message": result.get("message", "Session not found or expired"),
+                "session_expired": True,
+                "status": result.get("status", "not_found")  # [FIX Feb 2026 #8] Include status
             }
         )
 

@@ -748,6 +748,8 @@ class IntentClassificationRoutingAgent:
         # and OUT_OF_DOMAIN detection via embedding similarity.
         # =====================================================================
 
+
+
         # =====================================================================
         # STEP 2: HANDLE WORKFLOW HINT FROM FRONTEND
         # =====================================================================
@@ -1547,6 +1549,44 @@ class IntentClassificationRoutingAgent:
             
         return None
 
+    def invoke_target_workflow(self, query: str, routing_result: WorkflowRoutingResult, session_id: str) -> Dict[str, Any]:
+        """
+        Dynamically invoke the workflow targeted by the routing result.
+        
+        Args:
+            query: The original user question/input
+            routing_result: The classification result
+            session_id: The active session ID
+            
+        Returns:
+            The raw response dictionary from the underlying workflow API.
+        """
+        logger.info(f"[{self.name}] Natively invoking target workflow: {routing_result.target_workflow.value}")
+        
+        from common.infrastructure.api.internal import api_client
+        target = routing_result.target_workflow
+        
+        try:
+            if target == WorkflowTarget.ENGENIE_CHAT:
+                return api_client.call_engenie_chat(query=query, session_id=session_id)
+            elif target == WorkflowTarget.INSTRUMENT_IDENTIFIER:
+                return api_client.call_instrument_identifier(message=query, session_id=session_id)
+            elif target == WorkflowTarget.SOLUTION_WORKFLOW:
+                return api_client.call_solution_workflow(message=query, session_id=session_id)
+            elif target in (WorkflowTarget.OUT_OF_DOMAIN, WorkflowTarget.CONVERSATIONAL, WorkflowTarget.GREETING):
+                msg = routing_result.direct_response or routing_result.reject_message or OUT_OF_DOMAIN_MESSAGE
+                return {
+                    "success": True,
+                    "response": msg,
+                    "response_text": msg,
+                    "response_data": {"intent": routing_result.intent, "routed_to": target.value}
+                }
+            else:
+                logger.warning(f"[{self.name}] Unhandled workflow target: {target}")
+                return {"success": False, "error": f"Unhandled target: {target}"}
+        except Exception as e:
+            logger.error(f"[{self.name}] Error invoking target workflow {target.value}: {e}")
+            return {"success": False, "error": str(e)}
 
 # =============================================================================
 # HELPER FUNCTIONS
@@ -1564,7 +1604,8 @@ def route_to_workflow(query: str, context: Optional[Dict] = None) -> WorkflowRou
         WorkflowRoutingResult
     """
     agent = IntentClassificationRoutingAgent()
-    return agent.classify(query, context)
+    session_id = context.get('session_id', 'default') if context else 'default'
+    return agent.classify(query, session_id=session_id, context=context)
 
 
 def get_workflow_target(query: str) -> str:

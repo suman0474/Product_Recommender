@@ -111,12 +111,28 @@ def get_user_identifier() -> str:
 
     Returns:
         str: User identifier (user_id or IP address)
+
+    [FIX Feb 2026] Validates user_id type to prevent 'unhashable type: list' errors.
     """
     # Try to get authenticated user ID from session
     user_id = session.get('user_id')
 
     if user_id:
-        return f"user:{user_id}"
+        # [FIX Feb 2026] Validate type - user_id must be hashable
+        if isinstance(user_id, list):
+            # Take first element if list (e.g., ['user123'] -> 'user123')
+            user_id = user_id[0] if user_id else None
+            logger.warning(f"[RateLimit] user_id was list, extracted first element: {user_id}")
+        elif not isinstance(user_id, (str, int)):
+            # Convert to string for safety
+            try:
+                user_id = str(user_id)
+                logger.warning(f"[RateLimit] user_id converted to string: {user_id}")
+            except Exception:
+                user_id = None
+
+        if user_id:
+            return f"user:{user_id}"
 
     # Fallback to IP address
     return f"ip:{get_remote_address()}"

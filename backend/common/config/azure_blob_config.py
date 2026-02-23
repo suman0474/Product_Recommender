@@ -14,6 +14,7 @@ class Collections:
     USER_PROJECTS = 'user-projects'
     PRODUCT_DOCUMENTS = 'product-documents'
     FILES = 'files'
+    VENDORS = 'vendors'
 
 class AzureBlobManager:
     """

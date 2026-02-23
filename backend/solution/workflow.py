@@ -260,7 +260,7 @@ def semantic_intent_node(state: SolutionDeepAgentState) -> SolutionDeepAgentStat
                 state["is_solution_workflow"] = True
             elif refined_type == "reset":
                 state["is_solution_workflow"] = True  # Handle inside workflow
-            elif refined_type == "router_needed":
+            elif refined_type in ("router_needed", "invalid_input"):
                 state["is_solution_workflow"] = False
 
             logger.info(f"[SolutionDeepAgent] Refined Intent: {refined_type}")
@@ -2816,42 +2816,71 @@ def should_continue_after_intent(state: SolutionDeepAgentState) -> str:
 
     intent_type = state.get("intent_classification", {}).get("intent_type", "unknown")
     session_id = state.get("session_id", "default")
+    refined_internal = state.get("intent_classification", {}).get("refined_type", "requirements")
 
-    reroute_target = "chat"  # safe default
+    # [GAP FIX] If the LLM already identified this as an invalid/gibberish input,
+    # skip the router entirely and go straight to out_of_domain.
+    if refined_internal == "invalid_input":
+        from common.agentic.agents.routing.intent_classifier import OUT_OF_DOMAIN_MESSAGE
+        logger.info(f"[SolutionDeepAgent] LLM explicitly marked as invalid_input. Rerouting directly to out_of_domain.")
+        
+        reroute_target = "out_of_domain"
+        nested_result = {
+            "response": OUT_OF_DOMAIN_MESSAGE,
+            "response_text": OUT_OF_DOMAIN_MESSAGE,
+            "response_data": {
+                "intent": "invalid_input",
+                "routed_to": reroute_target
+            }
+        }
+    else:
+        reroute_target = "chat"  # safe default
 
-    try:
-        from common.agentic.agents.routing.intent_classifier import IntentClassificationRoutingAgent
-        router = IntentClassificationRoutingAgent()
-        routing_result = router.classify(
-            query=user_input,
-            session_id=session_id,
-        )
-        # Always extract .value from the WorkflowType enum — prevents
-        # "WorkflowType.ENGENIE_CHAT" strings reaching the frontend
-        _wf = getattr(routing_result, "target_workflow", None)
-        reroute_target = _wf.value if hasattr(_wf, "value") else (str(_wf) if _wf else "chat")
-        if not reroute_target or reroute_target.startswith("WorkflowType"):
-            reroute_target = "chat"
-    except Exception as e:
-        logger.warning(
-            f"[SolutionDeepAgent] Router agent call failed ({e}); "
-            f"falling back to intent_type mapping"
-        )
-        # Fallback: map SolutionIntentClassifier intent_type to a workflow name
-        reroute_target = {
-            "product_search": "search",
-            "comparison": "search",
-        }.get(intent_type, "chat")
+        try:
+            from common.agentic.agents.routing.intent_classifier import IntentClassificationRoutingAgent
+            router = IntentClassificationRoutingAgent()
+
+            # Bypass workflow lock by prefixing with 'main_', which tells the
+            # IntentClassificationRoutingAgent that this is a free-switching session
+            # and it shouldn't force us back into the 'solution' workflow.
+            routing_result = router.classify(
+                query=user_input,
+                session_id=f"main_reroute_{session_id}",
+            )
+
+            # Dynamically invoke the respective workflow directly using the router
+            nested_result = router.invoke_target_workflow(
+                query=user_input,
+                routing_result=routing_result,
+                session_id=session_id
+            )
+
+            # Always extract .value from the WorkflowType enum — prevents
+            # "WorkflowType.ENGENIE_CHAT" strings reaching the frontend
+            _wf = getattr(routing_result, "target_workflow", None)
+            reroute_target = _wf.value if hasattr(_wf, "value") else (str(_wf) if _wf else "chat")
+            if not reroute_target or reroute_target.startswith("WorkflowType"):
+                reroute_target = "chat"
+        except Exception as e:
+            logger.warning(
+                f"[SolutionDeepAgent] Router agent call failed ({e}); "
+                f"falling back to intent_type mapping"
+            )
+            nested_result = {}
+            # Fallback: map SolutionIntentClassifier intent_type to a workflow name
+            reroute_target = {
+                "comparison": "search",
+            }.get(intent_type, "chat")
 
     logger.info(
         f"[SolutionDeepAgent] Not a solution request "
-        f"(intent={intent_type}) — rerouting to '{reroute_target}'"
+        f"(intent={intent_type}, refined={refined_internal}) — rerouting to '{reroute_target}'"
     )
 
-    state["response"] = (
+    state["response"] = nested_result.get("response", nested_result.get("response_text", 
         f"Your query has been identified as a {reroute_target} request. "
         f"Routing you to the appropriate workflow."
-    )
+    ))
 
     # [GAP 4] Persist router fields into workflow_data so flash_response_node
     # can surface them in the router_category / router_* response_data fields.
@@ -2864,7 +2893,12 @@ def should_continue_after_intent(state: SolutionDeepAgentState) -> str:
         "router_url":              f"/{reroute_target}",
     })
 
-    state["response_data"] = {
+    # Preserve all the nested result data, but inject our redirect metadata
+    response_data = nested_result.get("response_data", nested_result) if nested_result else {}
+    if not isinstance(response_data, dict):
+        response_data = {}
+        
+    response_data.update({
         "workflow": "solution",
         "is_solution": False,
         "routed_to": reroute_target,
@@ -2874,7 +2908,10 @@ def should_continue_after_intent(state: SolutionDeepAgentState) -> str:
         "router_target_page":      reroute_target,
         "router_requires_routing": True,
         "router_url":              f"/{reroute_target}",
-    }
+        "raw_nested_result": nested_result # Keep reference
+    })
+    
+    state["response_data"] = response_data
     return "end"
 
 
