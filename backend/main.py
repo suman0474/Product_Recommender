@@ -1137,125 +1137,152 @@ def serve_image(file_id):
         description: Internal server error
     """
     try:
-        from azure_blob_config import azure_blob_manager
+        from common.core.azure_blob_file_manager import azure_blob_file_manager
         import os
 
         # Check if Azure Blob Storage is available
-        # If not available, will fallback to local filesystem later
         blob_name = None
-        if not azure_blob_manager.is_available:
-            logging.warning(f"Azure Blob Storage is not available for serving image: {file_id}, trying local fallback")
-            # Skip to local fallback below (don't return early)
+        if not azure_blob_file_manager.connection_string:
+            logging.warning(f"Azure Blob Storage is not configured for serving image: {file_id}, trying local fallback")
         else:
-            container_client = azure_blob_manager.container_client
-            base_path = azure_blob_manager.base_path
+            # Get the container client using the proper API
+            container_client = azure_blob_file_manager._get_container_client()
+            base_path = azure_blob_file_manager.base_path
 
-            # Search paths: files (UUIDs), images (cached), generic_images (generated), vendor_images (cached)
-            search_paths = [
-                f"{base_path}/files",
-                f"{base_path}/images",
-                f"{base_path}/generic_images",
-                f"{base_path}/vendor_images"
-            ]
+            if container_client is None:
+                logging.warning(f"Azure Blob Storage container client unavailable for: {file_id}")
+            else:
+                # Search paths: files (UUIDs), images (cached), generic_images (generated), vendor_images (cached)
+                search_paths = [
+                    f"{base_path}/files",
+                    f"{base_path}/images",
+                    f"{base_path}/generic_images",
+                    f"{base_path}/vendor_images"
+                ]
 
-            # Search for the blob with matching file_id
-            image_blob = None
-            content_type = 'image/png'  # Default content type
+                # Search for the blob with matching file_id
+                image_blob = None
+                content_type = 'image/png'  # Default content type
 
-            # Optimization: Check if file_id is a full blob path (e.g., "generic_images/filename.png")
-            # Try direct access first before searching all blobs
-            if '/' in file_id:
-                try:
-                    # file_id might be a relative path like "generic_images/viscousliquidflowtransmitter.png"
-                    full_blob_path = f"{base_path}/{file_id}"
-                    blob_client = container_client.get_blob_client(full_blob_path)
-                    blob_properties = blob_client.get_blob_properties()
-                    if blob_properties:
-                        blob_name = full_blob_path
-                        if blob_properties.content_settings and blob_properties.content_settings.content_type:
-                            content_type = blob_properties.content_settings.content_type
-                        logging.info(f"[SERVE_IMAGE] Direct access successful for blob path: {file_id}")
-                except Exception as direct_err:
-                    logging.debug(f"[SERVE_IMAGE] Direct access failed for {file_id}: {direct_err}, falling back to search")
+                # Optimization: Check if file_id is a full blob path (e.g., "generic_images/filename.png")
+                # Try direct access first before searching all blobs
+                if '/' in file_id:
+                    try:
+                        # file_id might be a relative path like "generic_images/viscousliquidflowtransmitter.png"
+                        full_blob_path = f"{base_path}/{file_id}"
+                        blob_client = container_client.get_blob_client(full_blob_path)
+                        blob_properties = blob_client.get_blob_properties()
+                        if blob_properties:
+                            blob_name = full_blob_path
+                            if blob_properties.content_settings and blob_properties.content_settings.content_type:
+                                content_type = blob_properties.content_settings.content_type
+                            logging.info(f"[SERVE_IMAGE] Direct access successful for blob path: {file_id}")
+                    except Exception as direct_err:
+                        logging.debug(f"[SERVE_IMAGE] Direct access failed for {file_id}: {direct_err}, falling back to search")
 
-            # Only search if direct access didn't find the blob
-            if blob_name is None:
-                try:
-                    for path in search_paths:
-                        if image_blob:
-                            break
+                # Also try the file_id directly as a blob name (e.g., "generic_control_valve.png")
+                if blob_name is None:
+                    try:
+                        full_blob_path = f"{base_path}/generic_images/{file_id}"
+                        blob_client = container_client.get_blob_client(full_blob_path)
+                        blob_properties = blob_client.get_blob_properties()
+                        if blob_properties:
+                            blob_name = full_blob_path
+                            if blob_properties.content_settings and blob_properties.content_settings.content_type:
+                                content_type = blob_properties.content_settings.content_type
+                            logging.info(f"[SERVE_IMAGE] Found in generic_images: {file_id}")
+                    except Exception:
+                        pass
 
-                        # List blobs and find the one with matching file_id in the name or metadata
-                        blobs = container_client.list_blobs(
-                            name_starts_with=path,
-                            include=['metadata']
+                # Try generic-images container directly (images stored without base_path prefix)
+                if blob_name is None:
+                    try:
+                        generic_container = azure_blob_file_manager._get_container_client('generic-images')
+                        if generic_container:
+                            blob_client = generic_container.get_blob_client(file_id)
+                            blob_properties = blob_client.get_blob_properties()
+                            if blob_properties:
+                                blob_name = file_id
+                                container_client = generic_container  # Switch to this container for download
+                                if blob_properties.content_settings and blob_properties.content_settings.content_type:
+                                    content_type = blob_properties.content_settings.content_type
+                                logging.info(f"[SERVE_IMAGE] Found in generic-images container: {file_id}")
+                    except Exception:
+                        pass
+
+                # Only search if direct access didn't find the blob
+                if blob_name is None:
+                    try:
+                        for path in search_paths:
+                            if image_blob:
+                                break
+
+                            # List blobs and find the one with matching file_id in the name or metadata
+                            blobs = container_client.list_blobs(
+                                name_starts_with=path,
+                                include=['metadata']
+                            )
+
+                            for blob in blobs:
+                                blob_name_lower = blob.name.lower()
+                                file_id_lower = file_id.lower()
+
+                                # Check strict endings (most reliable for filenames)
+                                if blob_name_lower.endswith(f"/{file_id_lower}") or blob_name_lower == file_id_lower:
+                                    image_blob = blob
+                                    blob_name = blob.name
+                                    if blob.content_settings and blob.content_settings.content_type:
+                                        content_type = blob.content_settings.content_type
+                                    break
+
+                                # Fallback: lenient substring match for UUIDs (only if not a path-like file_id)
+                                if '/' not in file_id and file_id in blob.name:
+                                    image_blob = blob
+                                    blob_name = blob.name
+                                    if blob.content_settings and blob.content_settings.content_type:
+                                        content_type = blob.content_settings.content_type
+                                    break
+
+                                # Also check metadata for file_id
+                                if blob.metadata and blob.metadata.get('file_id') == file_id:
+                                    image_blob = blob
+                                    blob_name = blob.name
+                                    if blob.content_settings and blob.content_settings.content_type:
+                                        content_type = blob.content_settings.content_type
+                                    break
+
+                    except Exception as e:
+                        logging.warning(f"Error searching for image blob {file_id}: {e}")
+
+                # If blob found in Azure, download and serve it
+                if blob_name is not None:
+                    # Download the blob content
+                    try:
+                        blob_client = container_client.get_blob_client(blob_name)
+                        download_stream = blob_client.download_blob()
+                        image_data = download_stream.readall()
+                    except Exception as e:
+                        logging.error(f"Failed to download image blob {file_id}: {e}")
+                        # Try local fallback on Azure download failure
+                        blob_name = None
+
+                    if blob_name is not None:
+                        # Extract filename from blob name
+                        filename = os.path.basename(blob_name)
+
+                        # Create response with proper headers
+                        response = send_file(
+                            BytesIO(image_data),
+                            mimetype=content_type,
+                            as_attachment=False,
+                            download_name=filename
                         )
 
-                        for blob in blobs:
-                            # Improved matching logic:
-                            # 1. Exact match (normalized)
-                            # 2. Ends with file_id (handles "generic_images/foo.png" matching "foo.png")
-                            # 3. UUID match
+                        # Add caching headers (cache for 30 days)
+                        response.headers['Cache-Control'] = 'public, max-age=2592000'
 
-                            blob_name_lower = blob.name.lower()
-                            file_id_lower = file_id.lower()
-
-                            # Check strict endings (most reliable for filenames)
-                            if blob_name_lower.endswith(f"/{file_id_lower}") or blob_name_lower == file_id_lower:
-                                image_blob = blob
-                                blob_name = blob.name
-                                if blob.content_settings and blob.content_settings.content_type:
-                                    content_type = blob.content_settings.content_type
-                                break
-
-                            # Fallback: lenient substring match for UUIDs (only if not a path-like file_id)
-                            if '/' not in file_id and file_id in blob.name:
-                                image_blob = blob
-                                blob_name = blob.name
-                                if blob.content_settings and blob.content_settings.content_type:
-                                    content_type = blob.content_settings.content_type
-                                break
-
-                            # Also check metadata for file_id
-                            if blob.metadata and blob.metadata.get('file_id') == file_id:
-                                image_blob = blob
-                                blob_name = blob.name
-                                if blob.content_settings and blob.content_settings.content_type:
-                                    content_type = blob.content_settings.content_type
-                                break
-
-                except Exception as e:
-                    logging.warning(f"Error searching for image blob {file_id}: {e}")
-
-            # If blob found in Azure, download and serve it
-            if blob_name is not None:
-                # Download the blob content
-                try:
-                    blob_client = container_client.get_blob_client(blob_name)
-                    download_stream = blob_client.download_blob()
-                    image_data = download_stream.readall()
-                except Exception as e:
-                    logging.error(f"Failed to download image blob {file_id}: {e}")
-                    # Try local fallback on Azure download failure
-                    blob_name = None
-
-                if blob_name is not None:
-                    # Extract filename from blob name
-                    filename = os.path.basename(blob_name)
-
-                    # Create response with proper headers
-                    response = send_file(
-                        BytesIO(image_data),
-                        mimetype=content_type,
-                        as_attachment=False,
-                        download_name=filename
-                    )
-
-                    # Add caching headers (cache for 30 days)
-                    response.headers['Cache-Control'] = 'public, max-age=2592000'
-
-                    logging.info(f"Served image from Azure Blob Storage: {file_id} ({len(image_data)} bytes)")
-                    return response
+                        logging.info(f"Served image from Azure Blob Storage: {file_id} ({len(image_data)} bytes)")
+                        return response
 
         # Fallback: Check local filesystem
         # This handles cases where images are saved locally due to Azure failure or Azure not available

@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { Send, Loader2, Play, Bot, LogOut, User, Upload, Save, FolderOpen, FileText, X, ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react';
+import { Send, Loader2, Play, Bot, LogOut, User, Upload, Save, FolderOpen, FileText, X, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, RefreshCw } from 'lucide-react';
 import { useToast } from '@/components/ui/use-toast';
 import { BASE_URL } from '../components/AIRecommender/api';
 import { routeUserInputByIntent, validateRequirements } from '@/components/AIRecommender/api';
@@ -419,6 +419,11 @@ const Project = () => {
 
     // Right panel dock state
     const [isRightDocked, setIsRightDocked] = useState(true);
+    // Right panel tab state (instruments/accessories)
+    const [rightPanelTab, setRightPanelTab] = useState<'instruments' | 'accessories'>('instruments');
+    // Collapse state for instrument/accessory cards
+    const [collapsedInstruments, setCollapsedInstruments] = useState<Set<number>>(new Set());
+    const [collapsedAccessories, setCollapsedAccessories] = useState<Set<number>>(new Set());
 
     // NEW: Field descriptions for tooltips (Managed by hook below)
     // const [fieldDescriptions, setFieldDescriptions] = useState<Record<string, string>>({});
@@ -780,6 +785,24 @@ const Project = () => {
     useEffect(() => {
         const loadState = async () => {
             try {
+                // Check if this is a fresh window opened via navigation popup
+                const urlParams = new URLSearchParams(window.location.search);
+                if (urlParams.get('fresh') === 'true') {
+                    console.log('[PROJECT] Fresh window detected - skipping state restoration');
+                    // Clear stored state so it doesn't persist
+                    await clearIndexedDBState();
+                    localStorage.removeItem('project_page_state_backup');
+                    localStorage.removeItem('project_page_state_meta');
+                    // Remove fresh param from URL to prevent re-clearing on manual refresh
+                    urlParams.delete('fresh');
+                    const newUrl = urlParams.toString()
+                        ? `${window.location.pathname}?${urlParams.toString()}`
+                        : window.location.pathname;
+                    window.history.replaceState({}, '', newUrl);
+                    setIsRestoringState(false);
+                    return;
+                }
+
                 // First check if there's a localStorage backup (more reliable for scroll position on refresh)
                 let backupData: any = null;
                 try {
@@ -909,6 +932,47 @@ const Project = () => {
             .split(/\s+/)               // Split by whitespace
             .map(part => part.charAt(0).toUpperCase() + part.slice(1)) // Capitalize
             .join('_');                 // Join with underscores
+    };
+
+    /**
+     * Format sample input by prettifying field names (removing underscores, etc.)
+     * Input: "range: 0-100 bar, Body_Material: 316SS [STANDARD]"
+     * Output: "Range: 0-100 bar, Body Material: 316SS [STANDARD]"
+     */
+    const formatSampleInput = (sampleInput: string) => {
+        if (!sampleInput) return "";
+        const parts = sampleInput.split(',').map(part => part.trim());
+        return parts.map(part => {
+            const colonIndex = part.indexOf(':');
+            if (colonIndex === -1) return part;
+            const key = part.substring(0, colonIndex).trim();
+            const value = part.substring(colonIndex + 1).trim();
+            return `${prettifyKey(key)}: ${value}`;
+        }).join(', ');
+    };
+
+    const toggleInstrumentCollapse = (index: number) => {
+        setCollapsedInstruments(prev => {
+            const newSet = new Set(prev);
+            if (newSet.has(index)) {
+                newSet.delete(index);
+            } else {
+                newSet.add(index);
+            }
+            return newSet;
+        });
+    };
+
+    const toggleAccessoryCollapse = (index: number) => {
+        setCollapsedAccessories(prev => {
+            const newSet = new Set(prev);
+            if (newSet.has(index)) {
+                newSet.delete(index);
+            } else {
+                newSet.add(index);
+            }
+            return newSet;
+        });
     };
 
     /**
@@ -3038,293 +3102,317 @@ const Project = () => {
                                         backdrop-blur-md border-2 border-[#45A4DE] shadow-xl rounded-2xl
                                         p-6">
                                         <div className="w-full">
-                                            {/* Results Display */}
-                                            <div className="space-y-6">
-                                                {/* Instruments Section */}
-                                                {instruments.length > 0 && (
-                                                    <>
-                                                        <div className="mb-6">
-                                                            <h2 className="text-2xl font-bold">
-                                                                Instruments ({instruments.length})
-                                                            </h2>
-                                                        </div>
+                                            {/* Tabs for Instruments and Accessories */}
+                                            <Tabs value={rightPanelTab} onValueChange={(value) => setRightPanelTab(value as 'instruments' | 'accessories')} className="w-full">
+                                                <TabsList className="grid w-full grid-cols-2 mb-10">
+                                                    <TabsTrigger value="instruments" className="data-[state=active]:bg-primary data-[state=active]:text-white">
+                                                        Instruments ({instruments.length})
+                                                    </TabsTrigger>
+                                                    <TabsTrigger value="accessories" className="data-[state=active]:bg-primary data-[state=active]:text-white">
+                                                        Accessories ({accessories.length})
+                                                    </TabsTrigger>
+                                                </TabsList>
 
-                                                        <div className="space-y-8">
-                                                            {instruments.map((instrument, index) => (
-                                                                <div
-                                                                    key={index}
-                                                                    className="rounded-xl bg-gradient-to-br from-[#F5FAFC]/90 to-[#EAF6FB]/90 dark:from-slate-900/90 dark:to-slate-900/50 backdrop-blur-2xl border border-white/20 dark:border-slate-700/30 shadow-2xl transition-all duration-300 ease-in-out hover:shadow-3xl hover:scale-[1.01] p-8 space-y-6"
-                                                                >
-                                                                    {/* Category (primary) and Product Name (secondary) - smart category for accessories */}
-                                                                    <div className="flex items-start justify-between">
-                                                                        <div className="space-y-1">
-                                                                            <h3 className="text-xl font-semibold">
-                                                                                {index + 1}. {(() => {
-                                                                                    // If category is generic like "Accessories", extract the type from productName
-                                                                                    const cat = instrument.category || '';
-                                                                                    const name = instrument.productName || '';
-                                                                                    const isGeneric = cat.toLowerCase() === 'accessories' || cat.toLowerCase() === 'accessory';
-                                                                                    if (isGeneric && name) {
-                                                                                        // Extract first part before "for" (e.g., "Thermowell for X" -> "Thermowell")
-                                                                                        const parts = name.split(' for ');
-                                                                                        return parts[0] || name;
-                                                                                    }
-                                                                                    return cat || name;
-                                                                                })()}{instrument.quantity ? ` (${instrument.quantity})` : ''}
-                                                                            </h3>
-                                                                            <p className="text-muted-foreground">
-                                                                                {instrument.productName}
-                                                                            </p>
-                                                                        </div>
-                                                                        <Button
-                                                                            onClick={() => handleRun(instrument, index)}
-                                                                            className="rounded-xl w-10 h-10 p-0 flex items-center justify-center bg-primary/40 hover:bg-primary text-primary hover:text-white transition-all duration-300 hover:scale-110"
-                                                                            variant="ghost"
-                                                                        >
-                                                                            <Play className="h-4 w-4" />
-                                                                        </Button>
-                                                                    </div>
+                                                {/* Instruments Tab Content */}
+                                                {rightPanelTab === 'instruments' && (
+                                                    <div className="space-y-6">
+                                                        {instruments.length > 0 ? (
+                                                            <div className="space-y-8">
+                                                                {instruments.map((instrument, index) => (
+                                                                    <div
+                                                                        key={index}
+                                                                        className="rounded-xl bg-gradient-to-br from-[#F5FAFC]/90 to-[#EAF6FB]/90 dark:from-slate-900/90 dark:to-slate-900/50 backdrop-blur-2xl border border-white/20 dark:border-slate-700/30 shadow-2xl transition-all duration-300 ease-in-out hover:shadow-3xl hover:scale-[1.01] p-8 space-y-6"
+                                                                    >
+                                                                        {/* Category (primary) and Product Name (secondary) - smart category display */}
+                                                                        <div className="flex items-start justify-between">
+                                                                            <div className="space-y-1">
+                                                                                <div className="flex items-center gap-3">
+                                                                                    <h3 className="text-xl font-semibold">
+                                                                                        {index + 1}. {(() => {
+                                                                                            const cat = instrument.category || '';
+                                                                                            const name = instrument.productName || '';
+                                                                                            const isGeneric = cat.toLowerCase() === 'accessories' || cat.toLowerCase() === 'accessory';
+                                                                                            if (isGeneric && name) {
+                                                                                                const parts = name.split(' for ');
+                                                                                                return parts[0] || name;
+                                                                                            }
+                                                                                            return cat || name;
+                                                                                        })()}{instrument.quantity ? ` (${instrument.quantity})` : ''}
+                                                                                    </h3>
+                                                                                    {(() => {
+                                                                                        const imageKey = getInstrumentImageKey(instrument);
+                                                                                        const imageUrl = genericImages[imageKey];
 
-                                                                    {/* Generic Product Type Image - use extracted base type as key */}
-                                                                    {(() => {
-                                                                        const imageKey = getInstrumentImageKey(instrument);
-                                                                        return genericImages[imageKey] ? (
-                                                                            <div className="flex justify-center my-4 rounded-lg overflow-hidden">
-                                                                                <img
-                                                                                    src={genericImages[imageKey]}
-                                                                                    alt={`Generic ${instrument.category || imageKey}`}
-                                                                                    className="w-48 h-48 object-contain rounded-lg mix-blend-multiply"
-                                                                                    onError={(e) => {
-                                                                                        e.currentTarget.style.display = 'none';
-                                                                                        setFailedImages(prev => new Set(prev).add(imageKey));
-                                                                                    }}
-                                                                                />
-                                                                            </div>
-                                                                        ) : (loadingImages.has(imageKey) || regeneratingImages.has(imageKey)) ? (
-                                                                            <div className="flex flex-col items-center justify-center my-4 py-6 rounded-lg bg-muted/20">
-                                                                                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground mb-2" />
-                                                                                <p className="text-xs text-muted-foreground">Generating image...</p>
-                                                                            </div>
-                                                                        ) : failedImages.has(imageKey) && (
-                                                                            <div className="flex flex-col items-center justify-center my-4 py-6 rounded-lg bg-muted/30 border border-dashed border-muted-foreground/30">
-                                                                                <p className="text-sm text-muted-foreground">Image not available</p>
-                                                                            </div>
-                                                                        );
-                                                                    })()}
-
-                                                                    {/* Specifications */}
-                                                                    {Object.keys(instrument.specifications).length > 0 && (
-                                                                        <div className="space-y-2">
-                                                                            <h4 className="font-medium text-sm text-muted-foreground">
-                                                                                Specifications:
-                                                                            </h4>
-                                                                            <p className="text-xs text-muted-foreground/80">
-                                                                                {Object.keys(instrument.specifications).length} specs (min 30, max 100 per item)
-                                                                            </p>
-                                                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                                                                {Object.entries(instrument.specifications).map(([key, value]) => {
-                                                                                    const prettyKey = prettifyKey(key);
-                                                                                    // Parse the specification value to extract display value and source
-                                                                                    const { displayValue, source, confidence } = parseSpecValue(value);
-                                                                                    const sourceLabel = getSourceLabel(source);
-
-                                                                                    // Check for description in fieldDescriptions (try multiple key formats)
-                                                                                    const description =
-                                                                                        fieldDescriptions[key] ||
-                                                                                        fieldDescriptions[prettyKey] ||
-                                                                                        fieldDescriptions[key.toLowerCase()] ||
-                                                                                        fieldDescriptions[key.replace(/_/g, ' ')] ||
-                                                                                        null;
-
-                                                                                    return (
-                                                                                        <div key={key} className="text-sm group break-words">
-                                                                                            {description ? (
+                                                                                        if (imageUrl) {
+                                                                                            return (
                                                                                                 <Tooltip>
                                                                                                     <TooltipTrigger asChild>
-                                                                                                        <span className="font-medium cursor-help border-b border-dotted border-muted-foreground/50 hover:text-primary transition-colors">
-                                                                                                            {prettyKey}:
-                                                                                                        </span>
+                                                                                                        <div className="w-10 h-10 rounded-md overflow-hidden border border-border/50 bg-white flex-shrink-0 cursor-pointer hover:border-primary/50 transition-colors shadow-sm">
+                                                                                                            <img
+                                                                                                                src={imageUrl}
+                                                                                                                alt={imageKey}
+                                                                                                                className="w-full h-full object-contain p-1 mix-blend-multiply"
+                                                                                                            />
+                                                                                                        </div>
                                                                                                     </TooltipTrigger>
-                                                                                                    <TooltipContent side="top" className="max-w-[300px] p-3 text-sm bg-popover/95 backdrop-blur-md border border-border shadow-xl">
-                                                                                                        <p>{description}</p>
+                                                                                                    <TooltipContent side="bottom" align="center" className="p-0 border-none bg-transparent shadow-none" sideOffset={10}>
+                                                                                                        <div className="w-64 h-64 bg-white rounded-xl shadow-2xl border border-border/50 p-4 overflow-hidden flex items-center justify-center animate-in fade-in zoom-in-95 duration-200">
+                                                                                                            <img
+                                                                                                                src={imageUrl}
+                                                                                                                alt={imageKey}
+                                                                                                                className="max-w-full max-h-full object-contain mix-blend-multiply"
+                                                                                                            />
+                                                                                                        </div>
                                                                                                     </TooltipContent>
                                                                                                 </Tooltip>
+                                                                                            );
+                                                                                        }
 
-                                                                                            ) : (
-                                                                                                <span className="font-medium">{prettyKey}:</span>
-                                                                                            )}{' '}
-                                                                                            <span className="text-muted-foreground">{displayValue}</span>
-                                                                                            {sourceLabel && (
-                                                                                                <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-primary/10 text-primary border border-primary/20">
-                                                                                                    {sourceLabel}
-                                                                                                </span>
-                                                                                            )}
-                                                                                            {confidence && confidence < 0.7 && (
-                                                                                                <span className="ml-1 text-xs text-amber-600" title={`Confidence: ${Math.round(confidence * 100)}%`}>
-                                                                                                    ⚠️
-                                                                                                </span>
-                                                                                            )}
-                                                                                        </div>
-                                                                                    );
-                                                                                })}
+                                                                                        if (loadingImages.has(imageKey) || regeneratingImages.has(imageKey)) {
+                                                                                            return (
+                                                                                                <div className="w-10 h-10 rounded-md flex items-center justify-center bg-muted/20 border border-border/50 flex-shrink-0 shadow-sm">
+                                                                                                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                                                                                                </div>
+                                                                                            );
+                                                                                        }
+
+                                                                                        return (
+                                                                                            <div className="w-10 h-10 rounded-md flex items-center justify-center bg-muted/30 border border-border/50 flex-shrink-0 text-muted-foreground/30 shadow-sm">
+                                                                                                <span className="text-[10px]">Img</span>
+                                                                                            </div>
+                                                                                        );
+                                                                                    })()}
+                                                                                </div>
+
+                                                                                <p className="text-muted-foreground">
+                                                                                    {instrument.productName}
+                                                                                </p>
+                                                                            </div>
+                                                                            <div className="flex flex-col gap-2">
+                                                                                <Button
+                                                                                    onClick={() => handleRun(instrument, index)}
+                                                                                    className="rounded-xl w-10 h-10 p-0 flex items-center justify-center bg-primary/40 hover:bg-primary text-primary hover:text-white transition-all duration-300 hover:scale-110"
+                                                                                    variant="ghost"
+                                                                                >
+                                                                                    <Play className="h-4 w-4" />
+                                                                                </Button>
+                                                                                <button
+                                                                                    onClick={() => toggleInstrumentCollapse(index)}
+                                                                                    className="w-10 h-10 flex items-center justify-center text-muted-foreground hover:text-foreground transition-all duration-200 cursor-pointer group"
+                                                                                >
+                                                                                    {collapsedInstruments.has(index) ? (
+                                                                                        <ChevronDown className="h-4 w-4 group-hover:scale-125 transition-transform" />
+                                                                                    ) : (
+                                                                                        <ChevronUp className="h-4 w-4 group-hover:scale-125 transition-transform" />
+                                                                                    )}
+                                                                                </button>
                                                                             </div>
                                                                         </div>
-                                                                    )}
 
-                                                                    {/* Sample Input Preview */}
-                                                                    <div className="pt-3 border-t">
-                                                                        <p className="text-xs text-muted-foreground mb-2">Sample Input:</p>
-                                                                        <p className="text-sm bg-muted p-3 rounded-lg font-mono">
-                                                                            {instrument.sampleInput}
-                                                                        </p>
+                                                                        {/* Specifications */}
+                                                                        {!collapsedInstruments.has(index) && Object.keys(instrument.specifications).length > 0 && (
+                                                                            <div className="space-y-2">
+                                                                                <h4 className="font-medium text-sm text-muted-foreground">
+                                                                                    Specifications:
+                                                                                </h4>
+
+                                                                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                                                                    {Object.entries(instrument.specifications).map(([key, value]) => {
+                                                                                        const prettyKey = prettifyKey(key);
+                                                                                        const { displayValue, source, confidence } = parseSpecValue(value);
+                                                                                        const sourceLabel = getSourceLabel(source);
+
+                                                                                        return (
+                                                                                            <div key={key} className="text-sm group break-words">
+                                                                                                <span className="font-medium">{prettyKey}:</span>{' '}
+                                                                                                <span className="text-muted-foreground">{displayValue}</span>
+                                                                                                {sourceLabel && (
+                                                                                                    <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-primary/10 text-primary border border-primary/20">
+                                                                                                        {sourceLabel}
+                                                                                                    </span>
+                                                                                                )}
+                                                                                                {confidence && confidence < 0.7 && (
+                                                                                                    <span className="ml-1 text-xs text-amber-600" title={`Confidence: ${Math.round(confidence * 100)}%`}>
+                                                                                                        ⚠️
+                                                                                                    </span>
+                                                                                                )}
+                                                                                            </div>
+                                                                                        );
+                                                                                    })}
+                                                                                </div>
+                                                                            </div>
+                                                                        )}
+
+                                                                        {/* Sample Input Preview */}
+                                                                        {!collapsedInstruments.has(index) && (
+                                                                            <div className="pt-3 border-t">
+                                                                                <p className="text-xs text-muted-foreground mb-2">Sample Input:</p>
+                                                                                <p className="text-sm bg-muted p-3 rounded-lg font-mono">
+                                                                                    {formatSampleInput(instrument.sampleInput)}
+                                                                                </p>
+                                                                            </div>
+                                                                        )}
                                                                     </div>
-                                                                </div>
-                                                            ))}
-                                                        </div>
-                                                    </>
+                                                                ))}
+                                                            </div>
+                                                        ) : (
+                                                            <div className="text-center py-8 text-muted-foreground">
+                                                                No instruments identified
+                                                            </div>
+                                                        )}
+                                                    </div>
                                                 )}
 
-                                                {/* Accessories Section */}
-                                                {accessories.length > 0 && (
-                                                    <>
-                                                        <h2 className="text-2xl font-bold mt-8">
-                                                            Accessories ({accessories.length})
-                                                        </h2>
+                                                {/* Accessories Tab Content */}
+                                                {rightPanelTab === 'accessories' && (
+                                                    <div className="space-y-6">
+                                                        {accessories.length > 0 ? (
+                                                            <div className="space-y-8">
+                                                                {accessories.map((accessory, index) => (
+                                                                    <div
+                                                                        key={index}
+                                                                        className="rounded-xl bg-gradient-to-br from-[#F5FAFC]/90 to-[#EAF6FB]/90 dark:from-slate-900/90 dark:to-slate-900/50 backdrop-blur-2xl border border-white/20 dark:border-slate-700/30 shadow-2xl transition-all duration-300 ease-in-out hover:shadow-3xl hover:scale-[1.01] p-6 space-y-4"
+                                                                    >
+                                                                        {/* Accessory Category (primary) and Name (secondary) - extract type from name if category is generic */}
+                                                                        <div className="flex items-start justify-between">
+                                                                            <div className="space-y-1">
+                                                                                <div className="flex items-center gap-3">
+                                                                                    <h3 className="text-xl font-semibold">
+                                                                                        {index + 1}. {(() => {
+                                                                                            const cat = accessory.category || '';
+                                                                                            const name = accessory.accessoryName || '';
+                                                                                            const isGeneric = cat.toLowerCase() === 'accessories' || cat.toLowerCase() === 'accessory';
+                                                                                            if (isGeneric && name) {
+                                                                                                const parts = name.split(' for ');
+                                                                                                return parts[0] || name;
+                                                                                            }
+                                                                                            return cat || name;
+                                                                                        })()}{accessory.quantity ? ` (${accessory.quantity})` : ''}
+                                                                                    </h3>
+                                                                                    {(() => {
+                                                                                        const imageKey = getAccessoryImageKey(accessory);
+                                                                                        const imageUrl = genericImages[imageKey];
 
-                                                        <div className="space-y-8 mt-4">
-                                                            {accessories.map((accessory, index) => (
-                                                                <div
-                                                                    key={index}
-                                                                    className="rounded-xl bg-gradient-to-br from-[#F5FAFC]/90 to-[#EAF6FB]/90 dark:from-slate-900/90 dark:to-slate-900/50 backdrop-blur-2xl border border-white/20 dark:border-slate-700/30 shadow-2xl transition-all duration-300 ease-in-out hover:shadow-3xl hover:scale-[1.01] p-6 space-y-4"
-                                                                >
-                                                                    {/* Accessory Category (primary) and Name (secondary) - extract type from name if category is generic */}
-                                                                    <div className="flex items-start justify-between">
-                                                                        <div className="space-y-1">
-                                                                            <h3 className="text-xl font-semibold">
-                                                                                {index + 1}. {(() => {
-                                                                                    // If category is generic like "Accessories", extract the type from accessoryName
-                                                                                    const cat = accessory.category || '';
-                                                                                    const name = accessory.accessoryName || '';
-                                                                                    const isGeneric = cat.toLowerCase() === 'accessories' || cat.toLowerCase() === 'accessory';
-                                                                                    if (isGeneric && name) {
-                                                                                        // Extract first part before "for" (e.g., "Thermowell for X" -> "Thermowell")
-                                                                                        const parts = name.split(' for ');
-                                                                                        return parts[0] || name;
-                                                                                    }
-                                                                                    return cat || name;
-                                                                                })()}{accessory.quantity ? ` (${accessory.quantity})` : ''}
-                                                                            </h3>
-                                                                            <p className="text-muted-foreground">
-                                                                                {accessory.accessoryName}
-                                                                            </p>
-                                                                        </div>
-                                                                        <Button
-                                                                            onClick={() => handleRunAccessory(accessory, index)}
-                                                                            className="rounded-xl w-10 h-10 p-0 flex items-center justify-center bg-primary/40 hover:bg-primary text-primary hover:text-white transition-all duration-300 hover:scale-110"
-                                                                            variant="ghost"
-                                                                        >
-                                                                            <Play className="h-4 w-4" />
-                                                                        </Button>
-                                                                    </div>
-
-                                                                    {/* Generic Product Type Image - use extracted accessory type as key */}
-                                                                    {(() => {
-                                                                        const imageKey = getAccessoryImageKey(accessory);
-                                                                        return genericImages[imageKey] ? (
-                                                                            <div className="flex justify-center my-4 rounded-lg overflow-hidden">
-                                                                                <img
-                                                                                    src={genericImages[imageKey]}
-                                                                                    alt={`Generic ${accessory.category || imageKey}`}
-                                                                                    className="w-48 h-48 object-contain rounded-lg mix-blend-multiply"
-                                                                                    onError={(e) => {
-                                                                                        e.currentTarget.style.display = 'none';
-                                                                                        setFailedImages(prev => new Set(prev).add(imageKey));
-                                                                                    }}
-                                                                                />
-                                                                            </div>
-                                                                        ) : (loadingImages.has(imageKey) || regeneratingImages.has(imageKey)) ? (
-                                                                            <div className="flex flex-col items-center justify-center my-4 py-6 rounded-lg bg-muted/20">
-                                                                                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground mb-2" />
-                                                                                <p className="text-xs text-muted-foreground">Generating image...</p>
-                                                                            </div>
-                                                                        ) : failedImages.has(imageKey) && (
-                                                                            <div className="flex flex-col items-center justify-center my-4 py-6 rounded-lg bg-muted/30 border border-dashed border-muted-foreground/30">
-                                                                                <p className="text-sm text-muted-foreground">Image not available</p>
-                                                                            </div>
-                                                                        );
-                                                                    })()}
-
-                                                                    {/* Specifications */}
-                                                                    {Object.keys(accessory.specifications).length > 0 && (
-                                                                        <div className="space-y-2">
-                                                                            <h4 className="font-medium text-sm text-muted-foreground">
-                                                                                Specifications:
-                                                                            </h4>
-                                                                            <p className="text-xs text-muted-foreground/80">
-                                                                                {Object.keys(accessory.specifications).length} specs (min 30, max 100 per item)
-                                                                            </p>
-                                                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                                                                {Object.entries(accessory.specifications).map(([key, value]) => {
-                                                                                    const prettyKey = prettifyKey(key);
-                                                                                    // Parse the specification value to extract display value and source
-                                                                                    const { displayValue, source, confidence } = parseSpecValue(value);
-                                                                                    const sourceLabel = getSourceLabel(source);
-
-                                                                                    // Check for description in fieldDescriptions
-                                                                                    const description =
-                                                                                        fieldDescriptions[key] ||
-                                                                                        fieldDescriptions[prettyKey] ||
-                                                                                        fieldDescriptions[key.toLowerCase()] ||
-                                                                                        fieldDescriptions[key.replace(/_/g, ' ')] ||
-                                                                                        null;
-
-                                                                                    return (
-                                                                                        <div key={key} className="text-sm group break-words">
-                                                                                            {description ? (
+                                                                                        if (imageUrl) {
+                                                                                            return (
                                                                                                 <Tooltip>
                                                                                                     <TooltipTrigger asChild>
-                                                                                                        <span className="font-medium cursor-help border-b border-dotted border-muted-foreground/50 hover:text-primary transition-colors">
-                                                                                                            {prettyKey}:
-                                                                                                        </span>
+                                                                                                        <div className="w-10 h-10 rounded-md overflow-hidden border border-border/50 bg-white flex-shrink-0 cursor-pointer hover:border-primary/50 transition-colors shadow-sm">
+                                                                                                            <img
+                                                                                                                src={imageUrl}
+                                                                                                                alt={imageKey}
+                                                                                                                className="w-full h-full object-contain p-1 mix-blend-multiply"
+                                                                                                            />
+                                                                                                        </div>
                                                                                                     </TooltipTrigger>
-                                                                                                    <TooltipContent side="top" className="max-w-[300px] p-3 text-sm bg-popover/95 backdrop-blur-md border border-border shadow-xl">
-                                                                                                        <p>{description}</p>
+                                                                                                    <TooltipContent side="bottom" align="center" className="p-0 border-none bg-transparent shadow-none" sideOffset={10}>
+                                                                                                        <div className="w-64 h-64 bg-white rounded-xl shadow-2xl border border-border/50 p-4 overflow-hidden flex items-center justify-center animate-in fade-in zoom-in-95 duration-200">
+                                                                                                            <img
+                                                                                                                src={imageUrl}
+                                                                                                                alt={imageKey}
+                                                                                                                className="max-w-full max-h-full object-contain mix-blend-multiply"
+                                                                                                            />
+                                                                                                        </div>
                                                                                                     </TooltipContent>
                                                                                                 </Tooltip>
-                                                                                            ) : (
-                                                                                                <span className="font-medium">{prettyKey}:</span>
-                                                                                            )}{' '}
-                                                                                            <span className="text-muted-foreground">{displayValue}</span>
-                                                                                            {sourceLabel && (
-                                                                                                <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-primary/10 text-primary border border-primary/20">
-                                                                                                    {sourceLabel}
-                                                                                                </span>
-                                                                                            )}
-                                                                                            {confidence && confidence < 0.7 && (
-                                                                                                <span className="ml-1 text-xs text-amber-600" title={`Confidence: ${Math.round(confidence * 100)}%`}>
-                                                                                                    ⚠️
-                                                                                                </span>
-                                                                                            )}
-                                                                                        </div>
-                                                                                    );
-                                                                                })}
+                                                                                            );
+                                                                                        }
+
+                                                                                        if (loadingImages.has(imageKey) || regeneratingImages.has(imageKey)) {
+                                                                                            return (
+                                                                                                <div className="w-10 h-10 rounded-md flex items-center justify-center bg-muted/20 border border-border/50 flex-shrink-0 shadow-sm">
+                                                                                                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                                                                                                </div>
+                                                                                            );
+                                                                                        }
+
+                                                                                        return (
+                                                                                            <div className="w-10 h-10 rounded-md flex items-center justify-center bg-muted/30 border border-border/50 flex-shrink-0 text-muted-foreground/30 shadow-sm">
+                                                                                                <span className="text-[10px]">Img</span>
+                                                                                            </div>
+                                                                                        );
+                                                                                    })()}
+                                                                                </div>
+
+                                                                                <p className="text-muted-foreground">
+                                                                                    {accessory.accessoryName}
+                                                                                </p>
+                                                                            </div>
+                                                                            <div className="flex flex-col gap-2">
+                                                                                <Button
+                                                                                    onClick={() => handleRunAccessory(accessory, index)}
+                                                                                    className="rounded-xl w-10 h-10 p-0 flex items-center justify-center bg-primary/40 hover:bg-primary text-primary hover:text-white transition-all duration-300 hover:scale-110"
+                                                                                    variant="ghost"
+                                                                                >
+                                                                                    <Play className="h-4 w-4" />
+                                                                                </Button>
+                                                                                <button
+                                                                                    onClick={() => toggleAccessoryCollapse(index)}
+                                                                                    className="w-10 h-10 flex items-center justify-center text-muted-foreground hover:text-foreground transition-all duration-200 cursor-pointer group"
+                                                                                >
+                                                                                    {collapsedAccessories.has(index) ? (
+                                                                                        <ChevronDown className="h-4 w-4 group-hover:scale-125 transition-transform" />
+                                                                                    ) : (
+                                                                                        <ChevronUp className="h-4 w-4 group-hover:scale-125 transition-transform" />
+                                                                                    )}
+                                                                                </button>
                                                                             </div>
                                                                         </div>
-                                                                    )}
 
-                                                                    {/* Sample Input Preview */}
-                                                                    <div className="pt-3 border-t">
-                                                                        <p className="text-xs text-muted-foreground mb-2">Sample Input:</p>
-                                                                        <p className="text-sm bg-muted p-3 rounded-lg font-mono">
-                                                                            {accessory.sampleInput}
-                                                                        </p>
+                                                                        {/* Specifications */}
+                                                                        {!collapsedAccessories.has(index) && Object.keys(accessory.specifications).length > 0 && (
+                                                                            <div className="space-y-2">
+                                                                                <h4 className="font-medium text-sm text-muted-foreground">
+                                                                                    Specifications:
+                                                                                </h4>
+
+                                                                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                                                                    {Object.entries(accessory.specifications).map(([key, value]) => {
+                                                                                        const prettyKey = prettifyKey(key);
+                                                                                        const { displayValue, source, confidence } = parseSpecValue(value);
+                                                                                        const sourceLabel = getSourceLabel(source);
+
+                                                                                        return (
+                                                                                            <div key={key} className="text-sm group break-words">
+                                                                                                <span className="font-medium">{prettyKey}:</span>{' '}
+                                                                                                <span className="text-muted-foreground">{displayValue}</span>
+                                                                                                {sourceLabel && (
+                                                                                                    <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-primary/10 text-primary border border-primary/20">
+                                                                                                        {sourceLabel}
+                                                                                                    </span>
+                                                                                                )}
+                                                                                                {confidence && confidence < 0.7 && (
+                                                                                                    <span className="ml-1 text-xs text-amber-600" title={`Confidence: ${Math.round(confidence * 100)}%`}>
+                                                                                                        ⚠️
+                                                                                                    </span>
+                                                                                                )}
+                                                                                            </div>
+                                                                                        );
+                                                                                    })}
+                                                                                </div>
+                                                                            </div>
+                                                                        )}
+
+                                                                        {/* Sample Input Preview */}
+                                                                        {!collapsedAccessories.has(index) && (
+                                                                            <div className="pt-3 border-t">
+                                                                                <p className="text-xs text-muted-foreground mb-2">Sample Input:</p>
+                                                                                <p className="text-sm bg-muted p-3 rounded-lg font-mono">
+                                                                                    {formatSampleInput(accessory.sampleInput)}
+                                                                                </p>
+                                                                            </div>
+                                                                        )}
                                                                     </div>
-                                                                </div>
-                                                            ))}
-                                                        </div>
-                                                    </>
+                                                                ))}
+                                                            </div>
+                                                        ) : (
+                                                            <div className="text-center py-8 text-muted-foreground">
+                                                                No accessories identified
+                                                            </div>
+                                                        )}
+                                                    </div>
                                                 )}
-                                            </div>
+                                            </Tabs>
                                         </div>
                                     </div>
                                 </div>

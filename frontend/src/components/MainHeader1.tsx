@@ -94,13 +94,14 @@ const MainHeader = ({
         return NAV_ROUTES.filter(route => route.path !== currentCategory);
     };
 
-    // Handle navigation button click - always opens a NEW window with fresh state
+    // Handle navigation button click - opens in new window with fresh state
     const handleNavigation = (path: string) => {
         // Add fresh=true to signal the target page to start with clean state
         const separator = path.includes('?') ? '&' : '?';
         const fullUrl = `${window.location.origin}${path}${separator}fresh=true`;
-        // _blank always opens a brand new tab/window, never reuses an existing one
-        window.open(fullUrl, '_blank', 'noopener,noreferrer');
+        // Use unique window name so a new window is always created
+        const windowName = `engenie_${path.replace(/\//g, '_')}_${Date.now()}`;
+        window.open(fullUrl, windowName, 'noopener,noreferrer');
         setIsNavPopupOpen(false);
     };
 

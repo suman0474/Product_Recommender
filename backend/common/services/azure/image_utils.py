@@ -68,34 +68,36 @@ def get_generic_image_from_azure(product_type: str) -> Optional[Dict[str, Any]]:
         if not azure_blob_manager.is_available:
              raise Exception("Azure Blob Manager not initialized or available")
 
-        # Get the underlying file manager and download the metadata JSON
+        # Get the underlying file manager
         file_manager = azure_blob_manager.get_client()
-        metadata_bytes = file_manager.download_file(
-            f"{normalized_type}.json",
-            container_name=Collections.GENERIC_IMAGES,
-        )
+        
+        # Try finding the image blob path exactly as uploaded by azure_blob_file_manager
+        product_normalized = product_type.lower().replace(' ', '_')
+        image_blob_path_exact = f"generic_{product_normalized}.png"
+        
+        found_blob_path = None
+        if file_manager.file_exists(image_blob_path_exact, container_name=Collections.GENERIC_IMAGES):
+            found_blob_path = image_blob_path_exact
+        else:
+            # Fallback to the alias normalized_type if different
+            alias_blob_path = f"generic_{normalized_type}.png"
+            if file_manager.file_exists(alias_blob_path, container_name=Collections.GENERIC_IMAGES):
+                found_blob_path = alias_blob_path
 
-        # Parse metadata
-        metadata = json.loads(metadata_bytes.decode('utf-8'))
-
-        # VALIDATION: Verify the actual image file exists, not just metadata
-        image_blob_path = metadata.get('image_blob_path')
-        if image_blob_path:
-            if not file_manager.file_exists(image_blob_path, container_name=Collections.GENERIC_IMAGES):
-                logger.warning(f"[AZURE_CHECK] Metadata exists but image file missing for: {product_type} at {image_blob_path}")
-                raise ResourceNotFoundError(f"Image file not found: {image_blob_path}")
+        if not found_blob_path:
+            raise ResourceNotFoundError(f"Image file not found: {image_blob_path_exact}")
 
         logger.info(f"[AZURE_CHECK] ✓ Found cached generic image in Azure Blob for: {product_type}")
         if issue_debug:
             issue_debug.cache_hit("azure_blob", normalized_type)
 
         return {
-            'azure_blob_path': image_blob_path,
-            'product_type': metadata.get('product_type'),
-            'source': metadata.get('source'),
-            'content_type': metadata.get('content_type', 'image/png'),
-            'file_size': metadata.get('file_size', 0),
-            'generation_method': metadata.get('generation_method', 'llm'),
+            'azure_blob_path': found_blob_path,
+            'product_type': product_type,
+            'source': 'gemini_imagen',
+            'content_type': 'image/png',
+            'file_size': 0,
+            'generation_method': 'llm',
             'cached': True,
             'storage_location': 'azure_blob'
         }
@@ -478,8 +480,12 @@ def fetch_generic_product_image(product_type: str) -> Optional[Dict[str, Any]]:
             pass
 
     # Step 4: Try fallbacks (prefixes, categories)
-    fallback_result = _try_fallback_cache_lookup(product_type)
+    # If we extracted a base type (e.g. "Mounting Bracket" from "Mounting Bracket for X"),
+    # we perform fallbacks on the base type to avoid returning the main instrument's image.
+    target_for_fallback = extracted_base_type if extracted_base_type else product_type
+    fallback_result = _try_fallback_cache_lookup(target_for_fallback)
     if fallback_result:
+        fallback_result['product_type'] = product_type
         return fallback_result
 
     # Complete failure - no image available

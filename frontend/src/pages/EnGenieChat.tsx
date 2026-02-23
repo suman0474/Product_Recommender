@@ -580,6 +580,21 @@ const EnGenieChat = () => {
         }
 
         const loadState = async () => {
+            // Check if this is a fresh window opened via navigation popup
+            const urlParams = new URLSearchParams(window.location.search);
+            if (urlParams.get('fresh') === 'true') {
+                console.log('[CHAT] Fresh window detected - skipping state restoration');
+                await clearChatDBState();
+                // Remove fresh param from URL to prevent re-clearing on manual refresh
+                urlParams.delete('fresh');
+                const newUrl = urlParams.toString()
+                    ? `${window.location.pathname}?${urlParams.toString()}`
+                    : window.location.pathname;
+                window.history.replaceState({}, '', newUrl);
+                setIsRestoring(false);
+                return;
+            }
+
             // Check if we need to clear state (triggered by New button)
             if (sessionStorage.getItem('clear_chat_state') === 'true') {
                 console.log('[CHAT] Clearing state as requested by New button');
@@ -1061,7 +1076,7 @@ const EnGenieChat = () => {
                     label: '📋 Open Solution Page',
                     icon: '🔧',
                     description: 'This looks like a **complex solution** requiring multiple instruments.\n\nFor better results, I recommend using our **Solution** page.'
-                  }
+                }
                 : null;
 
             // If backend suggests different page, show navigation button with actionButtons

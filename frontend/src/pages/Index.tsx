@@ -190,6 +190,7 @@ const Index = () => {
     try {
       const urlParams = new URLSearchParams(window.location.search);
       if (urlParams.get('projectId')) return null;
+      if (urlParams.get('fresh') === 'true') return null; // Fresh window - start clean
       if (sessionStorage.getItem('clear_search_state') === 'true') return null;
 
       const backup = localStorage.getItem(search_BACKUP_KEY);
@@ -275,6 +276,21 @@ const Index = () => {
     if (searchParams.get('projectId')) return;
 
     const loadState = async () => {
+      // Check if this is a fresh window opened via navigation popup
+      const urlParams = new URLSearchParams(window.location.search);
+      if (urlParams.get('fresh') === 'true') {
+        console.log('[SEARCH] Fresh window detected - skipping state restoration');
+        await clearsearchDBState();
+        setLoadedProjectData(null);
+        // Remove fresh param from URL to prevent re-clearing on manual refresh
+        urlParams.delete('fresh');
+        const newUrl = urlParams.toString()
+          ? `${window.location.pathname}?${urlParams.toString()}`
+          : window.location.pathname;
+        window.history.replaceState({}, '', newUrl);
+        return;
+      }
+
       // Check if we need to clear state (triggered by New button)
       if (sessionStorage.getItem('clear_search_state') === 'true') {
         console.log('[search] Clearing state as requested by New button');
