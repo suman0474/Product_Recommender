@@ -408,6 +408,16 @@ def query_solution(query: str, session_id: str) -> Dict[str, Any]:
         return {"success": False, "source": "solution", "error": str(e)}
 
 
+try:
+    from common.prompts.prompt_loader import load_prompt
+    _LLM_FALLBACK_SYSTEM_PROMPT = load_prompt("engenie_chat_prompts", "LLM_FALLBACK_SYSTEM_PROMPT")
+except Exception:
+    # Fallback to hardcoded if file not found
+    _LLM_FALLBACK_SYSTEM_PROMPT = (
+        "You are EnGenie, an expert industrial automation and instrumentation consultant.\n\n"
+        "Respond to the user's question below."
+    )
+
 def query_llm_fallback(query: str, session_id: str) -> Dict[str, Any]:
     """
     Use LLM directly for general questions.
@@ -420,6 +430,7 @@ def query_llm_fallback(query: str, session_id: str) -> Dict[str, Any]:
     """
     try:
         from common.services.llm.fallback import create_llm_with_fallback, invoke_with_retry_fallback
+        from langchain_core.messages import SystemMessage, HumanMessage
 
         # Use CONVERSATION temperature for natural, friendly responses
         chat_temperature = TemperaturePreset.CONVERSATION  # 0.7 - was 0.3 (too robotic)
@@ -430,10 +441,16 @@ def query_llm_fallback(query: str, session_id: str) -> Dict[str, Any]:
             skip_test=True
         )
 
+        # Build prompt with system message for Markdown formatting rules
+        messages = [
+            SystemMessage(content=_LLM_FALLBACK_SYSTEM_PROMPT),
+            HumanMessage(content=query),
+        ]
+
         # Use retry wrapper with automatic key rotation and OpenAI fallback
         response = invoke_with_retry_fallback(
             llm,
-            query,  # LLM accepts string directly
+            messages,
             max_retries=3,
             fallback_to_openai=True,
             model=AgenticConfig.DEFAULT_MODEL,

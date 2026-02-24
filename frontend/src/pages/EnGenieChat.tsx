@@ -1,3 +1,5 @@
+
+import remarkGfm from 'remark-gfm';
 import { useRef, useState, useEffect, KeyboardEvent, FormEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Send, Loader2, Database, Sparkles, AlertCircle, X, Save, LogOut, User, FileText, FolderOpen } from "lucide-react";
@@ -268,8 +270,8 @@ const MessageRow = ({ message, isHistory, uiLabels }: MessageRowProps) => {
                             transition: 'opacity 0.8s ease-out, transform 0.8s cubic-bezier(0.175, 0.885, 0.32, 1.275)'
                         }}
                     >
-                        <div>
-                            <ReactMarkdown>{message.content}</ReactMarkdown>
+                        <div className="prose prose-invert max-w-none">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
                         </div>
 
                         {message.awaitingConfirmation && (

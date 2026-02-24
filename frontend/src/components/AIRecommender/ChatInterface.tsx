@@ -1,4 +1,5 @@
 import { useRef, useEffect, useState, useCallback, memo } from "react";
+import remarkGfm from 'remark-gfm';
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Send, Bot, User, CheckCircle, Loader2, AlertCircle, Info } from "lucide-react";
@@ -195,8 +196,8 @@ const MessageRow = memo(({ message, isHistory, renderVendorAnalysisStatus, forma
               transition: "opacity 0.8s ease-out, transform 0.8s cubic-bezier(0.175, 0.885, 0.32, 1.275)"
             }}
           >
-            <div>
-              <ReactMarkdown
+            <div  className="prose prose-invert max-w-none">
+              <ReactMarkdown remarkPlugins={[remarkGfm]} 
                 components={{
                   a: ({ href, children }) => (
                     <a
