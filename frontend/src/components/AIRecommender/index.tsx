@@ -1795,6 +1795,108 @@ const AIRecommender = ({
         };
         console.log('Intent classification result (mapped):', intentResult);
 
+        // ════════════════════════════════════════════════════════════════════════
+        // INSTRUMENT IDENTIFIER WORKFLOW - Direct Product Search
+        // When target_workflow is 'instrument_identifier', call product-search API
+        // directly instead of going through sales-agent conversation flow.
+        // ════════════════════════════════════════════════════════════════════════
+        if (routingResult.target_workflow === 'instrument_identifier') {
+          console.log('[PRODUCT_SEARCH] Routing to /api/agentic/product-search for instrument_identifier');
+
+          try {
+            // Call product search workflow directly
+            const searchResult = await callAgenticProductSearch(
+              trimmedInput,
+              undefined,           // threadId - new search
+              searchSessionId,     // session ID
+              undefined,           // productType - let backend extract
+              'direct'             // source workflow
+            );
+
+            console.log('[PRODUCT_SEARCH] Result received:', {
+              productType: searchResult.product_type,
+              schemaFields: searchResult.schema ? Object.keys(searchResult.schema).length : 0,
+              rankedProducts: searchResult.ranked_products?.length || 0,
+              awaitingUserInput: searchResult.awaiting_user_input,
+              currentPhase: searchResult.current_phase
+            });
+
+            // Update state with search results
+            if (searchResult.product_type) {
+              setState((prev) => ({
+                ...prev,
+                productType: searchResult.product_type,
+                currentProductType: searchResult.product_type,
+                requirementSchema: searchResult.schema || {}
+              }));
+            }
+
+            // Update collected data with provided requirements
+            if (searchResult.provided_requirements) {
+              const flatRequirements = flattenRequirements(searchResult.provided_requirements);
+              const mergedData = mergeRequirementsWithSchema(flatRequirements, searchResult.schema || {});
+              setCollectedData(mergedData);
+            }
+
+            // Display the response message
+            const responseMessage = searchResult.sales_agent_response ||
+              `I found information about ${searchResult.product_type || 'your product'}. Let me analyze the requirements.`;
+            await streamAssistantMessage(responseMessage);
+
+            // Handle awaiting user input (HITL checkpoint)
+            if (searchResult.awaiting_user_input) {
+              setCurrentStep(searchResult.current_phase || 'awaitMissingInfo');
+              // Store thread ID for resumption
+              if (searchResult.thread_id) {
+                setProductSearchWorkflow({
+                  threadId: searchResult.thread_id,
+                  awaitingUserInput: true,
+                  currentPhase: searchResult.current_phase
+                });
+              }
+            } else if (searchResult.completed || (searchResult.ranked_products && searchResult.ranked_products.length > 0)) {
+              // Search complete - show results
+              setCurrentStep('finalAnalysis');
+              if (searchResult.ranked_products) {
+                // Build AnalysisResult object in correct format for RightPanel
+                const analysisResult = {
+                  productType: searchResult.product_type || '',
+                  vendorAnalysis: {
+                    vendorMatches: searchResult.vendorAnalysis?.vendorMatches || [],
+                    totalMatches: searchResult.vendorAnalysis?.totalMatches || searchResult.ranked_products.length
+                  },
+                  overallRanking: {
+                    markdownAnalysis: null,
+                    rankedProducts: searchResult.ranked_products
+                  },
+                  topRecommendation: searchResult.topRecommendation || searchResult.ranked_products[0]
+                };
+
+                console.log('[PRODUCT_SEARCH] Setting analysisResult for RightPanel:', {
+                  productType: analysisResult.productType,
+                  rankedProductsCount: analysisResult.overallRanking.rankedProducts.length,
+                  vendorMatchesCount: analysisResult.vendorAnalysis.vendorMatches.length
+                });
+
+                setState((prev) => ({
+                  ...prev,
+                  analysisResult: analysisResult  // Use correct field name (singular)
+                }));
+              }
+            }
+
+            setState((prev) => ({ ...prev, isLoading: false }));
+            return;
+
+          } catch (error: any) {
+            console.error('[PRODUCT_SEARCH] Error:', error);
+            // Fall through to sales-agent flow as fallback
+            await streamAssistantMessage(
+              "I encountered an issue processing your search. Let me help you step by step."
+            );
+          }
+        }
+
         // Handle knowledge questions (interrupts workflow)
         if (intentResult.intent === "knowledgeQuestion") {
           const agentResponse: AgentResponse = await callAgenticSalesAgent(

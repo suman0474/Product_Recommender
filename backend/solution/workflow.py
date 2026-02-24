@@ -444,11 +444,10 @@ def solution_analysis_node(state: SolutionDeepAgentState) -> SolutionDeepAgentSt
         )
 
     except Exception as e:
-        logger.error(f"[SolutionDeepAgent] Solution analysis failed: {e}")
         state["solution_analysis"] = {}
         state["solution_name"] = "Solution"
         state["instrument_context"] = state["user_input"]
-        state["error"] = str(e)
+        state["error"] = "Solution analysis failed"
 
     mark_phase_complete(state, "analyze_solution")
     return state
@@ -524,7 +523,7 @@ def reasoning_chain_node(state: SolutionDeepAgentState) -> SolutionDeepAgentStat
         )
 
     except Exception as e:
-        logger.warning(f"[SolutionDeepAgent] Reasoning chain failed (non-blocking): {e}")
+        pass
 
     mark_phase_complete(state, "reasoning_chain")
     return state
@@ -583,12 +582,12 @@ def deep_identification_node(state: SolutionDeepAgentState) -> SolutionDeepAgent
 
             solution_analysis = state.get("solution_analysis", {})
 
-            # Deduplicate instruments: keep unique by (category, product_name).
+            # Deduplicate instruments: keep unique by (category, product_type).
             seen_instruments: dict = {}
             deduped_instruments = []
             for inst in instruments:
                 cat = (inst.get("category") or "").strip().lower()
-                name = (inst.get("product_name") or inst.get("name") or "").strip().lower()
+                name = (inst.get("product_type") or inst.get("product_name") or inst.get("name") or "").strip().lower()
                 dedup_key = f"{cat}||{name}"
                 if dedup_key not in seen_instruments:
                     seen_instruments[dedup_key] = True
@@ -598,14 +597,19 @@ def deep_identification_node(state: SolutionDeepAgentState) -> SolutionDeepAgent
             instruments = deduped_instruments
 
             for inst in instruments:
-                sample_input = inst.get("sample_input", "")
+                short_description = inst.get("short_description", "").strip()
+                if not short_description:
+                    product = inst.get("product_type") or inst.get("product_name", "Instrument")
+                    category = inst.get("category", "")
+                    short_description = f"{category} {product}".strip()
+
                 safety = solution_analysis.get("safety_requirements", {})
                 if safety.get("sil_level"):
-                    sample_input += f" with {safety['sil_level']} rating"
+                    short_description += f" with {safety['sil_level']} rating"
                 key_params = solution_analysis.get("key_parameters", {})
                 if key_params.get("temperature_range"):
-                    sample_input += f" for {key_params['temperature_range']} temperature"
-                inst["sample_input"] = sample_input
+                    short_description += f" for {key_params['temperature_range']} temperature"
+                inst["short_description"] = short_description
                 inst["solution_purpose"] = f"Required for {state.get('solution_name', 'solution')}"
 
         state["identified_instruments"] = instruments
@@ -654,11 +658,14 @@ def deep_identification_node(state: SolutionDeepAgentState) -> SolutionDeepAgent
             )
 
             for acc in accessories:
-                acc_sample = f"{acc.get('category', 'Accessory')} for {acc.get('related_instrument', 'instruments')}"
+                acc_sample = acc.get("short_description", "").strip()
+                if not acc_sample:
+                    acc_sample = f"{acc.get('category', 'Accessory')} for {acc.get('related_instrument', 'instruments')}"
+                
                 safety = state.get("solution_analysis", {}).get("safety_requirements", {})
                 if safety.get("hazardous_area"):
                     acc_sample += " (explosion-proof required)"
-                acc["sample_input"] = acc_sample
+                acc["short_description"] = acc_sample
 
         state["identified_accessories"] = accessories
 
@@ -680,7 +687,7 @@ def deep_identification_node(state: SolutionDeepAgentState) -> SolutionDeepAgent
 
         # Add instruments
         for inst in instruments:
-            inst_name = inst.get("product_name", "Unknown_Instrument")
+            inst_name = inst.get("product_type") or inst.get("product_name", "Unknown_Instrument")
             item_thread_id = None
 
             if thread_manager and workflow_thread_id:
@@ -702,7 +709,7 @@ def deep_identification_node(state: SolutionDeepAgentState) -> SolutionDeepAgent
                 "category": inst.get("category", "Instrument"),
                 "quantity": inst.get("quantity", 1),
                 "specifications": inst.get("specifications", {}),
-                "sample_input": inst.get("sample_input", ""),
+                "sample_input": inst.get("short_description", ""),
                 "purpose": inst.get("solution_purpose", ""),
                 "strategy": inst.get("strategy", ""),
                 "item_thread_id": item_thread_id,
@@ -744,7 +751,7 @@ def deep_identification_node(state: SolutionDeepAgentState) -> SolutionDeepAgent
                 "name": acc_name,
                 "category": smart_category,
                 "quantity": acc.get("quantity", 1),
-                "sample_input": acc.get("sample_input", ""),
+                "sample_input": acc.get("short_description", ""),
                 "purpose": f"Supports {acc.get('related_instrument', 'instruments')}",
                 "related_instrument": acc.get("related_instrument", ""),
                 "item_thread_id": item_thread_id,
@@ -1020,6 +1027,8 @@ def sample_input_generation_node(state: SolutionDeepAgentState) -> SolutionDeepA
             item["parent_session_id"] = parent_session_id
             item["parent_instance_id"] = parent_instance_id
             item["parent_workflow"] = "solution_deep_agent"
+            item["is_standards_enriched"] = True  # Mark as pre-enriched with standards
+            item["is_taxonomy_normalized"] = True  # NEW: Mark as taxonomy-normalized
 
         state["all_items"] = all_items
 
@@ -1159,6 +1168,9 @@ def flash_response_node(state: SolutionDeepAgentState) -> SolutionDeepAgentState
             "open_dashboard":       workflow_data.get("open_dashboard", False),
             "sample_input":         workflow_data.get("sample_input", ""),
             "standards_applied":    workflow_data.get("standards_applied", False),
+            "is_standards_enriched": True,  # Flag for downstream workflows (standards)
+            "is_taxonomy_normalized": True,  # NEW: Flag for downstream workflows (taxonomy)
+            "enrichment_source":    "solution_deep_agent",  # Provenance tracking
             "awaiting_confirmation": workflow_data.get(
                 "awaiting_single_item_confirmation", False
             ),

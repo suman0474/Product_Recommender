@@ -296,8 +296,7 @@ class InstrumentIdentificationAgent:
                     continue
 
             except Exception as e:
-                logger.warning(f"[InstrumentAgent] Attempt {attempt}: {type(e).__name__} - {e}")
-                last_error = str(e)
+                last_error = "Extraction failed"
 
                 # Record failure for learning
                 if self._failure_memory and attempt == 3:
@@ -473,8 +472,7 @@ class AccessoryIdentificationAgent:
                     continue
 
             except Exception as e:
-                logger.warning(f"[AccessoryAgent] Attempt {attempt}: {type(e).__name__} - {e}")
-                last_error = str(e)
+                last_error = "Extraction failed"
                 continue
 
         # Fallback to keyword extraction

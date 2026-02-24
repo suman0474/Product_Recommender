@@ -170,7 +170,6 @@ class FlashPlanner:
             return plan
 
         except Exception as e:
-            logger.warning(f"[FlashPlanner] LLM planning failed, using defaults: {e}")
             return self._default_plan(user_input)
 
     def _default_plan(self, user_input: str) -> ExecutionPlan:
@@ -303,7 +302,6 @@ class FlashResponseComposer:
             return response.strip()
 
         except Exception as e:
-            logger.warning(f"[FlashComposer] LLM composition failed: {e}")
             return self._fallback_compose(items, solution_name, total_items)
 
     @staticmethod

@@ -37,25 +37,25 @@ class TaxonomyIntegrationAdapter:
         
         for item in normalized_items:
             # 1. Use Canonical Name -> Product Name -> Name
-            product_type = item.get("canonical_name") or item.get("product_name") or item.get("name") or "Unknown Product"
+            product_type = item.get("canonical_name") or item.get("product_type") or item.get("product_name") or item.get("name") or "Unknown Product"
             
             # 2. Flatten specs for search context
             specs = item.get("specifications", {})
             
-            # 3. Attach sample input if available
+            # 3. Attach short description if available
             # We try to match by canonical name first, then raw name
             raw_name = item.get("name", "")
-            sample_input = item.get("sample_input", "")
-            if not sample_input and sample_inputs:
-                sample_input = sample_inputs.get(product_type) or sample_inputs.get(raw_name) or ""
+            short_description = item.get("short_description", "")
+            if not short_description and sample_inputs:
+                short_description = sample_inputs.get(product_type) or sample_inputs.get(raw_name) or ""
 
             product_entry = {
                 "product_type": product_type,
                 "quantity": item.get("quantity", 1),
                 "application": f"{solution_name} - {item.get('category', 'General')}",
                 "requirements": specs,
-                "sample_input": sample_input,
-                "original_name": raw_name,
+                "sample_input": short_description, # Mapping it onto the existing field to avoid down-stream breakages right away
+                "original_name": item.get("name", product_type), # Rely on the renamed explicit object value
                 "taxonomy_matched": item.get("taxonomy_matched", False)
             }
             
@@ -155,42 +155,129 @@ class TaxonomyIntegrationAdapter:
                 f"{normalization_stats['match_rate']*100:.1f}% matched"
             )
             
-            # Step 2: Retrieve Specifications
-            logger.info("[TaxonomyIntegration] Step 2: Specification retrieval")
+            # Step 2: Description Comparison + Specification Retrieval
+            # ================================================================
+            # For each item:
+            #   a) Get the LLM-generated short_description (from Solution Deep Agent)
+            #   b) Lookup the MongoDB product_specifications record by canonical_name
+            #   c) Get the static DB description
+            #   d) Compare both descriptions using cosine similarity (SequenceMatcher)
+            #   e) If matched (>= threshold), merge into a single enriched description
+            #   f) Use the enriched description to search top 3 files via cosine similarity
+            #   g) Extract all specifications from those files
+            # ================================================================
+            logger.info("[TaxonomyIntegration] Step 2: Description comparison + Specification retrieval")
+            
+            from difflib import SequenceMatcher
+            
             retriever = SpecificationRetriever(
                 mongodb_uri=mongodb_uri,
                 json_catalog_path=json_catalog_path
             )
             
-            # Combine all items for batch retrieval
-            all_normalized_items = standardized_instruments + standardized_accessories
-            
-            # --- NEW: Retrieve specifications via vector similarity (top 3 files) ---
             from .rag import get_taxonomy_rag
             rag = get_taxonomy_rag()
             
+            # Combine all items for processing
+            all_normalized_items = standardized_instruments + standardized_accessories
+            
+            SIMILARITY_THRESHOLD = 0.35  # Minimum similarity to consider a match
+            
             for item in all_normalized_items:
-                canonical_name = item.get("canonical_name") or item.get("product_name") or item.get("name", "")
-                cat = item.get("category", "")
-                sample_input = item.get("sample_input", "")
+                canonical_name = item.get("canonical_name") or item.get("product_type") or item.get("product_name") or item.get("name", "")
+                category = item.get("category", "")
+                short_description = item.get("short_description", "")
                 
-                # Descriptive query for cosine similarity search
-                query = f"{canonical_name} {cat} {sample_input}".strip()
+                logger.info(
+                    f"[TaxonomyIntegration] Processing: '{canonical_name}' | "
+                    f"Category: '{category}' | LLM Description: '{short_description}'"
+                )
                 
-                logger.info(f"[TaxonomyIntegration] Retrieving top 3 files using cosine similarity for: {canonical_name}")
-                files = rag.get_top_files_by_similarity(query=query, top_k=3)
+                # --- Step 2a: Lookup MongoDB description ---
+                db_record = retriever.get_specification(canonical_name)
+                db_description = ""
+                if db_record and isinstance(db_record, dict):
+                    db_description = db_record.get("description", "")
+                    logger.info(
+                        f"[TaxonomyIntegration] DB Description for '{canonical_name}': '{db_description}'"
+                    )
+                else:
+                    logger.info(
+                        f"[TaxonomyIntegration] No DB record found for '{canonical_name}'"
+                    )
                 
+                # --- Step 2b: Compare descriptions using cosine similarity ---
+                similarity_score = 0.0
+                enriched_description = short_description  # Default: use LLM description alone
+                
+                if short_description and db_description:
+                    # Use SequenceMatcher for text similarity (approximation of cosine similarity)
+                    similarity_score = SequenceMatcher(
+                        None, 
+                        short_description.lower(), 
+                        db_description.lower()
+                    ).ratio()
+                    
+                    logger.info(
+                        f"[TaxonomyIntegration] Similarity score for '{canonical_name}': "
+                        f"{similarity_score:.3f} (threshold: {SIMILARITY_THRESHOLD})"
+                    )
+                    
+                    if similarity_score >= SIMILARITY_THRESHOLD:
+                        # Descriptions are similar enough — merge them into one enriched description
+                        # Combine: LLM's contextual detail + DB's canonical definition
+                        enriched_description = (
+                            f"{short_description}. {db_description}"
+                        ).strip()
+                        logger.info(
+                            f"[TaxonomyIntegration] MATCHED — Merged description for '{canonical_name}': "
+                            f"'{enriched_description}'"
+                        )
+                    else:
+                        # Descriptions diverge — use LLM description (more contextual for this user)
+                        logger.info(
+                            f"[TaxonomyIntegration] NO MATCH — Using LLM description only for '{canonical_name}'"
+                        )
+                elif db_description and not short_description:
+                    # No LLM description available, use DB description
+                    enriched_description = db_description
+                    logger.info(
+                        f"[TaxonomyIntegration] No LLM description — Using DB description for '{canonical_name}'"
+                    )
+                
+                # Store comparison metadata on the item
+                item["description_similarity"] = round(similarity_score, 3)
+                item["db_description"] = db_description
+                item["enriched_description"] = enriched_description
+                
+                # --- Step 2c: Use enriched description for top 3 file search ---
+                search_query = f"{canonical_name} {category} {enriched_description}".strip()
+                
+                logger.info(
+                    f"[TaxonomyIntegration] Searching top 3 files for '{canonical_name}' "
+                    f"with query: '{search_query[:100]}...'"
+                )
+                files = rag.get_top_files_by_similarity(query=search_query, top_k=3)
+                
+                # --- Step 2d: Extract specifications from matched files ---
                 vector_specs = {}
                 if files:
-                    logger.info(f"[TaxonomyIntegration] Extracting specifications from {len(files)} files for {canonical_name}")
+                    logger.info(
+                        f"[TaxonomyIntegration] Extracting specifications from "
+                        f"{len(files)} files for '{canonical_name}'"
+                    )
                     vector_specs = rag.extract_specifications_from_files(canonical_name, files)
+                else:
+                    logger.info(
+                        f"[TaxonomyIntegration] No files found for '{canonical_name}'"
+                    )
                 
                 item["vector_specifications"] = vector_specs
-            # ------------------------------------------------------------------------
             
+            # Batch retrieve DB specifications for all items
             spec_results = retriever.get_specifications_batch(all_normalized_items)
             
-            # Close MongoDB connection if used
+            # Close MongoDB connection
             retriever.close()
             
             # Step 3: Aggregate and prepare final payload
@@ -214,7 +301,7 @@ class TaxonomyIntegrationAdapter:
                 # Merge normalized item with specification data
                 aggregated_item = {
                     "id": idx + 1,
-                    "original_name": item.get("product_name") or item.get("name", ""),
+                    "original_name": item.get("product_type") or item.get("product_name") or item.get("name", ""),
                     "canonical_name": item.get("canonical_name", ""),
                     "category": item.get("category", "unknown"),
                     "quantity": item.get("quantity", 1),
@@ -283,8 +370,8 @@ class TaxonomyIntegrationAdapter:
         Prepare a single item for the Search Deep Agent workflow.
         """
         return {
-            "product_type": item.get("canonical_name", item.get("original_name", "")),
-            "sample_input": f"{item.get('quantity', 1)}x {item.get('canonical_name', '')}",
+            "product_type": item.get("canonical_name", item.get("original_name", item.get("name", ""))),
+            "sample_input": f"{item.get('quantity', 1)}x {item.get('canonical_name', item.get('name', ''))}",
             "solution_name": solution_name,
             "solution_id": solution_id,
             "user_specifications": item.get("user_specifications", {}),

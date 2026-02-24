@@ -13,7 +13,7 @@ __version__ = "1.0.0"
 # Import RAG functionality
 # =============================================================================
 
-from .rag import (
+from common.rag.standards import (
     # Workflow
     StandardsRAGState,
     create_standards_rag_state,

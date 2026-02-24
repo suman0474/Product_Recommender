@@ -312,13 +312,32 @@ class DeepAgenticWorkflowOrchestrator:
     @property
     def validation_tool(self):
         if self._validation_tool is None:
+            # Use ValidationTool from search.validation_tool (upstream module)
             from search.validation_tool import ValidationTool
-            self._validation_tool = ValidationTool(enable_ppi=self.enable_ppi)
+            enable_ppi = self.enable_ppi
+
+            class ValidationToolWrapper:
+                """Thin wrapper to maintain backward-compatible .validate() API."""
+                def __init__(self, enable_ppi: bool = True):
+                    self._enable_ppi = enable_ppi
+                    self._tool = ValidationTool(enable_ppi=enable_ppi)
+
+                def validate(self, user_input: str, expected_product_type: str = None,
+                             session_id: str = None, **kwargs) -> dict:
+                    return self._tool.validate(
+                        user_input=user_input,
+                        expected_product_type=expected_product_type,
+                        session_id=session_id or "unknown",
+                        **{k: v for k, v in kwargs.items() if k in ('enable_standards_enrichment', 'source_workflow')}
+                    )
+
+            self._validation_tool = ValidationToolWrapper(enable_ppi=enable_ppi)
         return self._validation_tool
 
     @property
     def advanced_params_tool(self):
         if self._advanced_params_tool is None:
+            # Use AdvancedSpecificationAgent from upstream search module
             from search.advanced_specification_agent import AdvancedSpecificationAgent
             self._advanced_params_tool = AdvancedSpecificationAgent()
         return self._advanced_params_tool

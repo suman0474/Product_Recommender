@@ -5971,7 +5971,7 @@ def upload_strategy_file():
 
             # Trigger background processing
             try:
-                from common.strategy_rag.ingestion.background_processor import process_strategy_document_async
+                from common.rag.strategy.ingestion.background_processor import process_strategy_document_async
 
                 process_strategy_document_async(
                     document_id=document_id,
@@ -6080,7 +6080,7 @@ def get_strategy_processing_status(document_id):
     try:
         logging.info(f"[STRATEGY-STATUS] Checking status for document {document_id}")
 
-        from common.strategy_rag.ingestion.background_processor import get_processing_status
+        from common.rag.strategy.ingestion.background_processor import get_processing_status
 
         status_info = get_processing_status(document_id)
 

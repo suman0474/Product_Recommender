@@ -51,12 +51,42 @@ class TaxonomyContextManager:
             "the device", "the unit"
         ]
         
-        has_trigger = any(re.search(r'\b' + re.escape(t) + r'\b', lower_input) for t in anaphora_triggers)
+        # 2. Add variable shorthand context triggers
+        variable_triggers = {
+            "temperature": "temperature",
+            "temp": "temperature",
+            "flow": "flow",
+            "pressure": "pressure",
+            "level": "level"
+        }
+        
+        # First, see if they used a generic variable word and we have a specific matching instrument active
+        for var, var_type in variable_triggers.items():
+            if re.search(r'\b' + re.escape(var) + r'\b', lower_input):
+                for inst in reversed(self.active_entities["instruments"]):
+                    canonical = (inst.get("canonical_name") or inst.get("name") or "").lower()
+                    if var_type in canonical:
+                        mapped_name = inst.get('canonical_name') or inst.get('name')
+                        logger.info(f"[TaxonomyContext] Resolved variable '{var}' to active entity: '{mapped_name}'")
+                        if lower_input.strip() == var:
+                            # If the input is EXACTLY the variable (e.g., the raw extracted item name), just replace it
+                            return mapped_name
+                        return f"{user_input} (referring to {mapped_name})"
+
+        # Fallback to standard anaphora
+        has_trigger = False
+        exact_trigger = False
+        for t in anaphora_triggers:
+            if re.search(r'\b' + re.escape(t) + r'\b', lower_input):
+                has_trigger = True
+                if lower_input.strip() == t:
+                    exact_trigger = True
+                break
         
         if not has_trigger:
             return user_input
 
-        # 2. Try to find the most recent/relevant entity
+        # 3. Try to find the most recent/relevant entity
         # Strategy: Logic favors the last mentioned instrument if available
         # In a real scenario, this would use an LLM or dependency parsing. 
         # For now, we use a heuristic based on active items.
@@ -69,9 +99,9 @@ class TaxonomyContextManager:
         if latest_instrument:
             canonical = latest_instrument.get("canonical_name") or latest_instrument.get("name")
             if canonical:
-                # Append context to the input rather than replacing text to avoid grammar issues
-                # This acts as a hint to the normalization agent
                 logger.info(f"[TaxonomyContext] Resolved context: '{latest_instrument.get('name')}' for input '{user_input}'")
+                if exact_trigger:
+                    return canonical
                 return f"{user_input} (referring to {canonical})"
 
         return user_input

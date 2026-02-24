@@ -133,7 +133,7 @@ def generate_no_results_message(query: str, session_id: str) -> str:
 def query_index_rag(query: str, session_id: str) -> Dict[str, Any]:
     """Query Index RAG for product information."""
     try:
-        from common.index_rag.index_rag_workflow import run_index_rag_workflow
+        from common.rag.index.workflow import run_index_rag_workflow
         
         result = run_index_rag_workflow(
             question=query,
@@ -217,7 +217,7 @@ def _standards_source_filter(query: str) -> Optional[List[str]]:
 def query_standards_rag(query: str, session_id: str) -> Dict[str, Any]:
     """Query Standards RAG for standards information."""
     try:
-        from common.standards.rag import run_standards_rag_workflow
+        from common.rag.standards import run_standards_rag_workflow
 
         # Build source_filter so retrieval is scoped to relevant documents
         # instead of searching all 11 standards files every time.
@@ -271,7 +271,7 @@ def query_strategy_rag(
         Dict with success, answer, preferred_vendors, etc.
     """
     try:
-        from common.strategy_rag.strategy_rag_workflow import run_strategy_rag_workflow
+        from common.rag.strategy.workflow import run_strategy_rag_workflow
 
         # Build workflow parameters
         workflow_params = {

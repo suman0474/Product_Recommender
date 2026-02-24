@@ -48,14 +48,26 @@ class TaxonomyNormalizationAgent:
         normalized = []
 
         for item in items:
-            raw_name = (item.get("product_name") or item.get("name") or item.get("category") or "")
+            raw_name = (item.get("product_type") or item.get("product_name") or item.get("name") or item.get("category") or "")
+            short_description = item.get("short_description", "") 
             
+            # Combine raw name with rich context if available
+            enrichment_base = f"{raw_name} {short_description}".strip()
+
             # 1. Resolve context on the name itself if it looks generic
             # e.g. "it", "the meter" -> resolved name
             resolved_name_from_context = ctx.resolve_contextual_references(raw_name)
             
-            # 2. Try standard resolution with potentially enriched name
-            resolution = self._resolve_term(resolved_name_from_context, item_type, alias_map)
+            logger.info(f"[TaxonomyNorm Context] Raw Name: '{raw_name}' | Short Description: '{short_description}'")
+            logger.info(f"[TaxonomyNorm Context] Resolved Name: '{resolved_name_from_context}' | Dispatching to Taxonomy...")
+
+            # 2. Try standard resolution with potentially enriched name - passing the rich block to RAG
+            resolution = self._resolve_term(
+                raw_name=resolved_name_from_context, 
+                item_type=item_type, 
+                alias_map=alias_map,
+                context_description=short_description
+            )
 
             # 3. Fallback: If no match and we have a strong context hint from user input
             # (Logic: if the user input explicitly mentions a recognized term that matches this item)
@@ -68,6 +80,16 @@ class TaxonomyNormalizationAgent:
 
             enriched_item = dict(item)
             enriched_item["canonical_name"] = resolution["canonical_name"]
+            
+            # Explicitly perform renaming if a taxonomy match was successful
+            if resolution["taxonomy_matched"]:
+                if "product_type" in enriched_item:
+                    enriched_item["product_type"] = resolution["canonical_name"]
+                elif "product_name" in enriched_item:
+                    enriched_item["product_name"] = resolution["canonical_name"]
+                if "name" in enriched_item:
+                    enriched_item["name"] = resolution["canonical_name"]
+                    
             enriched_item["taxonomy_matched"] = resolution["taxonomy_matched"]
             enriched_item["match_source"] = resolution["match_source"]
             
@@ -81,7 +103,134 @@ class TaxonomyNormalizationAgent:
         return normalized
 
     def _get_alias_map(self) -> Dict[str, str]:
-        alias_map: Dict[str, str] = {}
+        # Comprehensive alias map covering common user terms and abbreviations
+        # Reference: taxonomy_rag_prompts.txt [ALIAS_MAP_REFERENCE] section
+        alias_map: Dict[str, str] = {
+            # TEMPERATURE
+            "temperature": "Temperature Transmitter",
+            "temp": "Temperature Transmitter",
+            "temp sensor": "Temperature Transmitter",
+            "temperature sensor": "Temperature Transmitter",
+            "temperature probe": "Temperature Transmitter",
+            "tt": "Temperature Transmitter",
+            "ti": "Temperature Indicator",
+            "te": "Temperature Element",
+            "rtd": "Resistance Temperature Detector",
+            "pt100": "Resistance Temperature Detector",
+            "pt1000": "Resistance Temperature Detector",
+            "tc": "Thermocouple",
+            "thermocouple": "Thermocouple",
+            "type k": "Thermocouple",
+            "type j": "Thermocouple",
+            "type t": "Thermocouple",
+
+            # PRESSURE
+            "pressure": "Pressure Transmitter",
+            "press": "Pressure Transmitter",
+            "pt": "Pressure Transmitter",
+            "pi": "Pressure Indicator",
+            "pg": "Pressure Gauge",
+            "pressure gauge": "Pressure Gauge",
+            "pdt": "Differential Pressure Transmitter",
+            "dp": "Differential Pressure Transmitter",
+            "dp transmitter": "Differential Pressure Transmitter",
+            "differential pressure": "Differential Pressure Transmitter",
+            "ps": "Pressure Switch",
+            "pressure switch": "Pressure Switch",
+            "psv": "Pressure Safety Valve",
+            "prv": "Pressure Safety Valve",
+            "pressure relief": "Pressure Safety Valve",
+
+            # FLOW
+            "flow": "Flow Meter",
+            "flow meter": "Flow Meter",
+            "ft": "Flow Transmitter",
+            "fe": "Flow Element",
+            "mag meter": "Magnetic Flow Meter",
+            "magnetic meter": "Magnetic Flow Meter",
+            "magnetic flow": "Magnetic Flow Meter",
+            "coriolis": "Coriolis Flow Meter",
+            "coriolis meter": "Coriolis Flow Meter",
+            "mass flow": "Coriolis Flow Meter",
+            "vortex": "Vortex Flow Meter",
+            "vortex meter": "Vortex Flow Meter",
+            "ultrasonic flow": "Ultrasonic Flow Meter",
+            "clamp on": "Ultrasonic Flow Meter",
+            "turbine meter": "Turbine Flow Meter",
+            "orifice": "Orifice Plate",
+            "orifice plate": "Orifice Plate",
+
+            # LEVEL
+            "level": "Level Transmitter",
+            "lt": "Level Transmitter",
+            "li": "Level Indicator",
+            "ls": "Level Switch",
+            "level switch": "Level Switch",
+            "radar": "Radar Level Transmitter",
+            "radar level": "Radar Level Transmitter",
+            "80 ghz": "Radar Level Transmitter",
+            "gwr": "Guided Wave Radar",
+            "guided wave": "Guided Wave Radar",
+            "ultrasonic level": "Ultrasonic Level Transmitter",
+            "hydrostatic": "Hydrostatic Level Transmitter",
+            "submersible": "Hydrostatic Level Transmitter",
+            "float": "Float Level Switch",
+            "float switch": "Float Level Switch",
+            "displacer": "Displacer Level Transmitter",
+
+            # ANALYTICAL
+            "ph": "pH Analyzer",
+            "ph meter": "pH Analyzer",
+            "ph analyzer": "pH Analyzer",
+            "conductivity": "Conductivity Analyzer",
+            "do": "Dissolved Oxygen Analyzer",
+            "dissolved oxygen": "Dissolved Oxygen Analyzer",
+            "orp": "ORP Analyzer",
+            "turbidity": "Turbidity Analyzer",
+            "gas analyzer": "Gas Analyzer",
+
+            # VALVES
+            "cv": "Control Valve",
+            "control valve": "Control Valve",
+            "valve": "Control Valve",
+            "modulating valve": "Control Valve",
+            "positioner": "Valve Positioner",
+            "valve positioner": "Valve Positioner",
+            "actuator": "Valve Actuator",
+            "ball valve": "Ball Valve",
+            "globe valve": "Globe Valve",
+            "butterfly valve": "Butterfly Valve",
+            "solenoid": "Solenoid Valve",
+            "solenoid valve": "Solenoid Valve",
+
+            # ACCESSORIES
+            "thermowell": "Thermowell",
+            "tw": "Thermowell",
+            "well": "Thermowell",
+            "protection tube": "Thermowell",
+            "manifold": "Manifold",
+            "3 valve manifold": "3-Valve Manifold",
+            "5 valve manifold": "5-Valve Manifold",
+            "cable gland": "Cable Gland",
+            "cable fitting": "Cable Gland",
+            "jb": "Junction Box",
+            "junction box": "Junction Box",
+            "j-box": "Junction Box",
+            "terminal head": "Terminal Head",
+            "connection head": "Terminal Head",
+            "gasket": "Gasket",
+            "spiral wound": "Spiral Wound Gasket",
+            "ring joint": "Ring Joint Gasket",
+            "impulse line": "Impulse Line",
+            "sensing line": "Impulse Line",
+            "tubing": "Impulse Line",
+            "mounting bracket": "Mounting Bracket",
+            "bracket": "Mounting Bracket",
+            "air filter regulator": "Air Filter Regulator",
+            "afr": "Air Filter Regulator",
+            "limit switch": "Limit Switch",
+        }
+        
         if not self.memory:
             return alias_map
 
@@ -95,15 +244,18 @@ class TaxonomyNormalizationAgent:
                     canonical = item.get("name", "")
                     if not canonical:
                         continue
-                    alias_map[canonical.lower()] = canonical
+                    # Don't overwrite explicit logic
+                    if canonical.lower() not in alias_map:
+                        alias_map[canonical.lower()] = canonical
                     for alias in item.get("aliases", []):
-                        alias_map[alias.lower()] = canonical
+                        if alias.lower() not in alias_map:
+                            alias_map[alias.lower()] = canonical
         except Exception as e:
             logger.debug(f"[TaxonomyNorm] Could not build alias map: {e}")
 
         return alias_map
 
-    def _resolve_term(self, raw_name: str, item_type: str, alias_map: Dict[str, str]) -> Dict[str, Any]:
+    def _resolve_term(self, raw_name: str, item_type: str, alias_map: Dict[str, str], context_description: str = "") -> Dict[str, Any]:
         raw_lower = raw_name.strip().lower()
 
         if raw_lower in alias_map:
@@ -118,7 +270,9 @@ class TaxonomyNormalizationAgent:
         rag = self._get_rag()
         if rag:
             try:
-                results = rag.retrieve(query=raw_name, top_k=1, item_type=item_type)
+                # Combine raw name and context description for a richer query
+                query = f"{raw_name} {context_description}".strip()
+                results = rag.retrieve(query=query, top_k=1, item_type=item_type)
                 if results and results[0].get("score", 0) >= 0.70:
                     canonical = results[0]["name"]
                     logger.info(
@@ -148,11 +302,31 @@ class TaxonomyNormalizationAgent:
         normalized = []
 
         for item in items:
-            raw_name = (item.get("product_name") or item.get("name") or item.get("category") or "")
-            resolution = self._resolve_term(raw_name, item_type, alias_map)
+            raw_name = (item.get("product_type") or item.get("product_name") or item.get("name") or item.get("category") or "")
+            short_description = item.get("short_description", "")
+            
+            logger.info(f"[TaxonomyNorm Standard] Processing Item: '{raw_name}'")
+            logger.info(f"[TaxonomyNorm Standard] Extracted Short Desc: '{short_description}'")
+            
+            resolution = self._resolve_term(
+                raw_name=raw_name, 
+                item_type=item_type, 
+                alias_map=alias_map,
+                context_description=short_description
+            )
 
             enriched_item = dict(item)
             enriched_item["canonical_name"] = resolution["canonical_name"]
+            
+            # Explicitly perform renaming if a taxonomy match was successful
+            if resolution["taxonomy_matched"]:
+                if "product_type" in enriched_item:
+                    enriched_item["product_type"] = resolution["canonical_name"]
+                elif "product_name" in enriched_item:
+                    enriched_item["product_name"] = resolution["canonical_name"]
+                if "name" in enriched_item:
+                    enriched_item["name"] = resolution["canonical_name"]
+                    
             enriched_item["taxonomy_matched"] = resolution["taxonomy_matched"]
             enriched_item["match_source"] = resolution["match_source"]
 
@@ -215,7 +389,7 @@ class TaxonomyNormalizationAgent:
 
         for item in items:
             # We look for the canonical name in the item, or fallback to name
-            name_to_reverse = (item.get("canonical_name") or item.get("product_name") or item.get("name") or "").strip()
+            name_to_reverse = (item.get("canonical_name") or item.get("product_type") or item.get("product_name") or item.get("name") or "").strip()
             name_lower = name_to_reverse.lower()
             
             reversed_code = name_to_reverse # Default to original if no match

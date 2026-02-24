@@ -108,7 +108,7 @@ class SchemaWorkflow:
                     logger.info(
                         f"[SCHEMA_WORKFLOW] ✓ Session cache hit (took {elapsed:.2f}s)"
                     )
-                    print(f"✓ [SCHEMA_WORKFLOW] Using session cache (saved {100+:.0f}+ seconds!)\n")
+                    print(f"✓ [SCHEMA_WORKFLOW] Using session cache (saved {100:.0f}+ seconds!)\n")
                     return cached
 
             # ╔═══════════════════════════════════════════════════════════════════╗

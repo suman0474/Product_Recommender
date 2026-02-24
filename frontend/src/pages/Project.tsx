@@ -3184,9 +3184,11 @@ const Project = () => {
                                                                                     })()}
                                                                                 </div>
 
-                                                                                <p className="text-muted-foreground">
-                                                                                    {instrument.productName}
-                                                                                </p>
+                                                                                {instrument.productName && instrument.productName.toLowerCase() !== (instrument.category || '').toLowerCase() && (
+                                                                                    <p className="text-muted-foreground">
+                                                                                        {instrument.productName}
+                                                                                    </p>
+                                                                                )}
                                                                             </div>
                                                                             <div className="flex flex-col gap-2">
                                                                                 <Button
@@ -3334,9 +3336,11 @@ const Project = () => {
                                                                                     })()}
                                                                                 </div>
 
-                                                                                <p className="text-muted-foreground">
-                                                                                    {accessory.accessoryName}
-                                                                                </p>
+                                                                                {accessory.accessoryName && accessory.accessoryName.toLowerCase() !== (accessory.category || '').toLowerCase() && (
+                                                                                    <p className="text-muted-foreground">
+                                                                                        {accessory.accessoryName}
+                                                                                    </p>
+                                                                                )}
                                                                             </div>
                                                                             <div className="flex flex-col gap-2">
                                                                                 <Button

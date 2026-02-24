@@ -323,6 +323,8 @@ class ValidationDeepAgentState(TypedDict, total=False):
     expected_product_type: Optional[str]
     enable_standards_enrichment: bool
     source_workflow: Optional[str]
+    is_standards_enriched: bool  # Skip standards enrichment if input is pre-enriched
+    is_taxonomy_normalized: bool  # NEW: Skip taxonomy normalization if pre-normalized
 
     # ═══════════════════════════════════════════════════════════════
     # HITL DETECTION
@@ -340,6 +342,9 @@ class ValidationDeepAgentState(TypedDict, total=False):
     original_product_type: str
     product_type_refined: bool
     normalized_category: Optional[str]
+    canonical_product_type: Optional[str]  # NEW: Taxonomy-normalized product type
+    taxonomy_matched: bool  # NEW: Whether product type matched taxonomy
+    taxonomy_normalization_skipped: bool  # NEW: Track if taxonomy normalization was bypassed
 
     # ═══════════════════════════════════════════════════════════════
     # SCHEMA LOADING
@@ -358,6 +363,7 @@ class ValidationDeepAgentState(TypedDict, total=False):
     standards_rag_invoked: bool
     standards_rag_invocation_time: Optional[str]
     schema_population_info: Dict[str, Any]
+    standards_enrichment_skipped: bool  # NEW: Track if enrichment was bypassed
 
     # ═══════════════════════════════════════════════════════════════
     # VALIDATION
@@ -535,27 +541,34 @@ def _node_trigger_advanced_specs(state: ValidationDeepAgentState) -> dict:
 
 
 def _node_extract_product_type(state: ValidationDeepAgentState) -> dict:
-    """Node 4 — Extract and normalize product type."""
+    """
+    Node 4 — Use provided product type (already extracted at orchestration level).
+
+    ARCHITECTURE CHANGE (Feb 2026):
+    - Intent extraction now happens at orchestration level (run_product_search_workflow)
+    - This node ALWAYS receives expected_product_type
+    - Performs only normalization and validation
+    """
     user_input = state.get("user_input", "")
     expected_product_type = state.get("expected_product_type")
-    source_workflow = state.get("source_workflow")
 
-    logger.info("[ValidationDeepAgent] Step 1.1: Extracting product type")
+    logger.info("[ValidationDeepAgent] Step 1.1: Using provided product type")
 
     try:
-        from common.tools.intent_tools import extract_requirements_tool
+        # Product type should ALWAYS be provided by orchestration level
+        if not expected_product_type:
+            logger.error("[ValidationDeepAgent] ✗ No product type provided - orchestration level should extract it")
+            return {
+                "error": "Product type not provided by orchestration level",
+                "current_node": "extract_product_type"
+            }
 
-        extract_result = extract_requirements_tool.invoke({
-            "user_input": user_input
-        })
+        product_type = expected_product_type
+        logger.info(
+            f"[ValidationDeepAgent] ✓ Using product type from orchestration: {product_type}"
+        )
 
-        if source_workflow == "instrument_identifier" and expected_product_type:
-            product_type = expected_product_type
-            logger.info(f"[ValidationDeepAgent] Retaining frontend expected product type '{product_type}' for instrument_identifier workflow.")
-        else:
-            product_type = extract_result.get("product_type") or expected_product_type or ""
-
-        # Normalize bare measurement words
+        # Normalize bare measurement words (e.g., "pressure" → "Pressure Transmitter")
         BARE_MEASUREMENT_FIX = {
             "level": "Level Transmitter",
             "pressure": "Pressure Transmitter",
@@ -569,6 +582,7 @@ def _node_extract_product_type(state: ValidationDeepAgentState) -> dict:
             original_pt = product_type
             product_type = BARE_MEASUREMENT_FIX[product_type.lower().strip()]
 
+            # Context-aware normalization for flow and level
             if original_pt.lower() == "flow":
                 if "transmitter" in user_input.lower() and "meter" not in user_input.lower():
                     product_type = "Flow Transmitter"
@@ -583,27 +597,89 @@ def _node_extract_product_type(state: ValidationDeepAgentState) -> dict:
 
             logger.warning(f"[ValidationDeepAgent] ⚠ Normalized '{original_pt}' → '{product_type}'")
 
-        if not product_type:
-            logger.error("[ValidationDeepAgent] ✗ Product type extraction failed")
-            return {
-                "error": "Could not determine product type from input",
-                "current_node": "extract_product_type"
-            }
-
-        logger.info(f"[ValidationDeepAgent] ✓ Detected product type: {product_type}")
-
         return {
             "product_type": product_type,
-            "original_product_type": extract_result.get("product_type"),
+            "original_product_type": expected_product_type,
             "current_node": "extract_product_type",
-            "tools_called": state.get("tools_called", []) + ["extract_requirements_tool"]
+            "tools_called": state.get("tools_called", []) + ["orchestration_level_intent_extraction"]
         }
 
     except Exception as e:
-        logger.error(f"[ValidationDeepAgent] Product type extraction error: {e}")
+        logger.error(f"[ValidationDeepAgent] Product type processing error: {e}")
         return {
             "error": str(e),
             "current_node": "extract_product_type"
+        }
+
+
+def _node_normalize_product_type(state: ValidationDeepAgentState) -> dict:
+    """Node 4b — Normalize product type using Taxonomy RAG."""
+    product_type = state.get("product_type", "")
+    user_input = state.get("user_input", "")
+    source_workflow = state.get("source_workflow")
+    is_taxonomy_normalized = state.get("is_taxonomy_normalized", False)
+
+    logger.info("[ValidationDeepAgent] Step 1.1b: Normalizing product type with Taxonomy RAG")
+
+    try:
+        # NEW: Skip if already normalized by Solution Deep Agent
+        if is_taxonomy_normalized:
+            logger.info(
+                f"[ValidationDeepAgent] ⚡ Skipping taxonomy normalization - "
+                f"already normalized by {source_workflow}"
+            )
+            return {
+                "canonical_product_type": product_type,
+                "taxonomy_matched": False,
+                "taxonomy_normalization_skipped": True,
+                "current_node": "normalize_product_type"
+            }
+
+        # NEW: Call Taxonomy RAG for normalization
+        from taxonomy_rag.normalization_agent import TaxonomyNormalizationAgent
+
+        logger.info(f"[ValidationDeepAgent] Calling Taxonomy RAG for: {product_type}")
+        norm_agent = TaxonomyNormalizationAgent()
+        normalized_items = norm_agent.normalize_with_context(
+            items=[{"name": product_type, "type": "instrument"}],
+            user_input=user_input,
+            history=[],
+            item_type="instrument"
+        )
+
+        if normalized_items and len(normalized_items) > 0:
+            canonical = normalized_items[0].get("canonical_name", product_type)
+            matched = normalized_items[0].get("taxonomy_matched", False)
+
+            logger.info(
+                f"[ValidationDeepAgent] ✓ Taxonomy normalized: "
+                f"{product_type} → {canonical} (matched={matched})"
+            )
+
+            return {
+                "canonical_product_type": canonical,
+                "product_type": canonical,  # Update product_type with canonical name
+                "taxonomy_matched": matched,
+                "taxonomy_normalization_skipped": False,
+                "current_node": "normalize_product_type"
+            }
+        else:
+            logger.warning("[ValidationDeepAgent] Taxonomy RAG returned no results")
+            return {
+                "canonical_product_type": product_type,
+                "taxonomy_matched": False,
+                "taxonomy_normalization_skipped": False,
+                "current_node": "normalize_product_type"
+            }
+
+    except Exception as e:
+        logger.warning(f"[ValidationDeepAgent] Taxonomy normalization failed: {e}")
+        # Fallback: use original product_type
+        return {
+            "canonical_product_type": product_type,
+            "taxonomy_matched": False,
+            "taxonomy_normalization_skipped": False,
+            "current_node": "normalize_product_type"
         }
 
 
@@ -684,6 +760,28 @@ def _node_enrich_schema(state: ValidationDeepAgentState) -> dict:
     schema = state.get("schema", {})
     session_id = state.get("session_id")
     enable_standards = state.get("enable_standards_enrichment", True)
+    is_standards_enriched = state.get("is_standards_enriched", False)
+
+    # NEW: Early exit if input is already enriched
+    if is_standards_enriched:
+        logger.info(
+            f"[ValidationDeepAgent] ⚡ Skipping Standards Deep Agent - "
+            f"input already enriched by {state.get('source_workflow')}"
+        )
+        return {
+            "session_cache_hit": False,
+            "schema": schema,  # Use as-is
+            "standards_info": {},
+            "enrichment_result": {
+                "success": True,
+                "source": "pre_enriched",
+                "specifications_count": 0
+            },
+            "standards_rag_invoked": False,
+            "standards_enrichment_skipped": True,
+            "standards_rag_invocation_time": None,
+            "current_node": "enrich_schema"
+        }
 
     if not enable_standards:
         logger.info("[ValidationDeepAgent] Standards enrichment disabled")
@@ -757,16 +855,44 @@ def _node_enrich_schema(state: ValidationDeepAgentState) -> dict:
 
                 logger.info(f"[ValidationDeepAgent] ✓ Standards Deep Agent generated {specs_count} specifications")
 
-                # Merge deep agent specs into schema
+                # Store raw deep agent specs
                 if "deep_agent_specs" not in schema:
                     schema["deep_agent_specs"] = {}
                 schema["deep_agent_specs"].update(specs_dict)
 
-                # Also update mandatory fields with extracted specs
-                if "mandatory" in schema and isinstance(schema["mandatory"], dict):
-                    for key, value in specs_dict.items():
-                        if key not in schema["mandatory"] and value and str(value).lower() not in ["null", "none"]:
-                            schema["mandatory"][key] = {"value": value, "source": "standards_deep_agent"}
+                # ═══════════════════════════════════════════════════════════════════
+                # FIX: Merge enriched values INTO existing field definitions
+                # The frontend expects field values inside each field definition object
+                # ═══════════════════════════════════════════════════════════════════
+                enriched_field_count = 0
+                for category in ["mandatory", "optional"]:
+                    if category in schema and isinstance(schema[category], dict):
+                        for field_name, field_def in schema[category].items():
+                            # Normalize field name for matching
+                            normalized_key = field_name.lower().replace(" ", "_").replace("-", "_")
+
+                            # Check multiple key formats for the enriched value
+                            enriched_value = None
+                            for check_key in [normalized_key, field_name, field_name.lower()]:
+                                if check_key in specs_dict:
+                                    enriched_value = specs_dict[check_key]
+                                    break
+
+                            if enriched_value and str(enriched_value).lower() not in ["null", "none", ""]:
+                                if isinstance(field_def, dict):
+                                    # Update existing field definition with enriched value
+                                    field_def["value"] = enriched_value
+                                    field_def["enrichment_source"] = "standards_deep_agent"
+                                    enriched_field_count += 1
+                                else:
+                                    # Replace primitive with dict containing value
+                                    schema[category][field_name] = {
+                                        "value": enriched_value,
+                                        "enrichment_source": "standards_deep_agent"
+                                    }
+                                    enriched_field_count += 1
+
+                logger.info(f"[ValidationDeepAgent] ✓ Enriched {enriched_field_count} field definitions with standards values")
 
                 enrichment_result = {
                     "success": True,
@@ -944,6 +1070,10 @@ def _node_build_result(state: ValidationDeepAgentState) -> dict:
             }
         },
         "standards_info": state.get("standards_info", {}),
+        "standards_enrichment_skipped": state.get("standards_enrichment_skipped", False),
+        "canonical_product_type": state.get("canonical_product_type"),
+        "taxonomy_matched": state.get("taxonomy_matched", False),
+        "taxonomy_normalization_skipped": state.get("taxonomy_normalization_skipped", False),
         "advanced_specs_info": state.get("advanced_specs_info", {}),
         "tools_called": state.get("tools_called", []),
     }
@@ -998,6 +1128,7 @@ def create_validation_workflow() -> StateGraph:
     workflow.add_node("detect_hitl_response", _node_detect_hitl_response)
     workflow.add_node("trigger_advanced_specs", _node_trigger_advanced_specs)
     workflow.add_node("extract_product_type", _node_extract_product_type)
+    workflow.add_node("normalize_product_type", _node_normalize_product_type)  # NEW
     workflow.add_node("load_schema", _node_load_schema)
     workflow.add_node("enrich_schema", _node_enrich_schema)
     workflow.add_node("validate_requirements", _node_validate_requirements)
@@ -1030,8 +1161,9 @@ def create_validation_workflow() -> StateGraph:
     # Advanced specs → build result
     workflow.add_edge("trigger_advanced_specs", "build_result")
 
-    # Normal validation flow
-    workflow.add_edge("extract_product_type", "load_schema")
+    # Normal validation flow (NEW: added taxonomy normalization)
+    workflow.add_edge("extract_product_type", "normalize_product_type")  # NEW
+    workflow.add_edge("normalize_product_type", "load_schema")  # NEW
     workflow.add_edge("load_schema", "enrich_schema")
     workflow.add_edge("enrich_schema", "validate_requirements")
     workflow.add_edge("validate_requirements", "build_result")
@@ -1080,7 +1212,9 @@ class ValidationDeepAgent:
         expected_product_type: Optional[str] = None,
         session_id: Optional[str] = None,
         enable_standards_enrichment: Optional[bool] = None,
-        source_workflow: Optional[str] = None
+        source_workflow: Optional[str] = None,
+        is_standards_enriched: Optional[bool] = None,
+        is_taxonomy_normalized: Optional[bool] = None
     ) -> Dict[str, Any]:
         """Validate user input and requirements.
 
@@ -1091,6 +1225,9 @@ class ValidationDeepAgent:
             expected_product_type: Expected product type (optional)
             session_id: Session identifier (for logging/tracking)
             enable_standards_enrichment: Override standards enrichment setting
+            source_workflow: Source workflow identifier
+            is_standards_enriched: Skip enrichment if input is pre-enriched (auto-derived from source_workflow)
+            is_taxonomy_normalized: Skip taxonomy normalization if pre-normalized (auto-derived from source_workflow)
 
         Returns:
             Validation result with comprehensive metadata
@@ -1114,6 +1251,14 @@ class ValidationDeepAgent:
                 else self.enable_standards_enrichment
             ),
             "source_workflow": source_workflow,
+            "is_standards_enriched": (
+                is_standards_enriched if is_standards_enriched is not None
+                else (source_workflow == "solution_deep_agent")
+            ),
+            "is_taxonomy_normalized": (
+                is_taxonomy_normalized if is_taxonomy_normalized is not None
+                else (source_workflow == "solution_deep_agent")
+            ),
             "tools_called": [],
             "phases_completed": [],
             "start_time": start_time,
@@ -1247,7 +1392,9 @@ class ValidationTool:
         expected_product_type: Optional[str] = None,
         session_id: Optional[str] = None,
         enable_standards_enrichment: Optional[bool] = None,
-        source_workflow: Optional[str] = None
+        source_workflow: Optional[str] = None,
+        is_standards_enriched: Optional[bool] = None,
+        is_taxonomy_normalized: Optional[bool] = None
     ) -> Dict[str, Any]:
         """
         Validate user input and requirements.
@@ -1260,6 +1407,9 @@ class ValidationTool:
             expected_product_type: Expected product type (optional, for validation)
             session_id: Session identifier (for logging/tracking)
             enable_standards_enrichment: Override standards enrichment setting
+            source_workflow: Source workflow identifier
+            is_standards_enriched: Skip standards enrichment if pre-enriched
+            is_taxonomy_normalized: Skip taxonomy normalization if pre-normalized
 
         Returns:
             Validation result with schema, requirements, validity, etc.
@@ -1270,7 +1420,9 @@ class ValidationTool:
             expected_product_type=expected_product_type,
             session_id=session_id,
             enable_standards_enrichment=enable_standards_enrichment if enable_standards_enrichment is not None else self.enable_standards_enrichment,
-            source_workflow=source_workflow
+            source_workflow=source_workflow,
+            is_standards_enriched=is_standards_enriched,
+            is_taxonomy_normalized=is_taxonomy_normalized
         )
 
         return result

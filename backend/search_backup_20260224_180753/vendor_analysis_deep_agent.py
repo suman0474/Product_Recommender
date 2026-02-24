@@ -96,7 +96,6 @@ class VendorAnalysisDeepAgentState(TypedDict, total=False):
     product_type: str
     structured_requirements: Dict[str, Any]
     schema: Optional[Dict[str, Any]]
-    is_standards_enriched: bool        # NEW: Propagate from validation
     tool: Any                          # VendorAnalysisTool instance (for helper methods)
 
     # --- Node 1: setup_components ---
@@ -188,7 +187,6 @@ def _node_apply_strategy_rag(state: VendorAnalysisDeepAgentState) -> dict:
     product_type = state.get("product_type", "")
     structured_requirements = state.get("structured_requirements", {})
     session_id = state.get("session_id")
-    is_standards_enriched = state.get("is_standards_enriched", False)
 
     import datetime
     invocation_time = datetime.datetime.now().isoformat()
@@ -198,7 +196,6 @@ def _node_apply_strategy_rag(state: VendorAnalysisDeepAgentState) -> dict:
     logger.info("STRATEGY RAG INVOKED")
     logger.info("   Timestamp: %s", invocation_time)
     logger.info("   Product Type: %s", product_type)
-    logger.info("   Pre-enriched: %s", is_standards_enriched)
     logger.info("   Vendors to Filter: %d", len(vendors))
     logger.info("   Session: %s", session_id)
     logger.info("=" * 70)
@@ -211,7 +208,9 @@ def _node_apply_strategy_rag(state: VendorAnalysisDeepAgentState) -> dict:
     try:
         rag_invoked = True
         from common.rag.strategy.enrichment import get_strategy_with_auto_fallback
-        from common.rag.strategy.mongodb_loader import filter_vendors_by_strategy
+        # [FIX Feb 2026] Use filter_vendors_by_strategy_data (correct signature)
+        # NOT filter_vendors_by_strategy from mongodb_loader (expects product_type: str, not list)
+        from common.rag.strategy.enrichment import filter_vendors_by_strategy_data
 
         strategy_context = get_strategy_with_auto_fallback(
             product_type=product_type,
@@ -236,7 +235,7 @@ def _node_apply_strategy_rag(state: VendorAnalysisDeepAgentState) -> dict:
             logger.info("[VendorAnalysisDeepAgent] Priorities: %s", priorities)
             logger.info("[VendorAnalysisDeepAgent] Strategy notes: %s...", (strategy_notes[:200] if strategy_notes else "None"))
 
-            filter_result = filter_vendors_by_strategy(vendors, strategy_context)
+            filter_result = filter_vendors_by_strategy_data(vendors, strategy_context, product_type=product_type)
             accepted = filter_result.get("accepted_vendors", [])
             excluded_vendors = filter_result.get("excluded_vendors", [])
 
@@ -556,13 +555,26 @@ def _node_assemble_result(state: VendorAnalysisDeepAgentState) -> dict:
 
     logger.info("[VendorAnalysisDeepAgent] Node 9: assemble_result — %d matches", len(vendor_matches))
 
+    # Safely extract and normalize preferred vendors list (handle nested lists, non-strings)
+    preferred_vendors_raw = strategy_context.get("preferred_vendors", []) if strategy_context else []
+    preferred_vendors_normalized = []
+    if isinstance(preferred_vendors_raw, list):
+        for item in preferred_vendors_raw:
+            # Handle nested lists (flatten one level)
+            if isinstance(item, list):
+                preferred_vendors_normalized.extend([str(v).lower() for v in item if v])
+            # Handle strings
+            elif isinstance(item, str):
+                preferred_vendors_normalized.append(item.lower())
+            # Handle other types (convert to string)
+            elif item is not None:
+                preferred_vendors_normalized.append(str(item).lower())
+
     # Enrich matches with strategy priority scores
     for match in vendor_matches:
         vendor_name = match.get("vendor", "")
         match["strategy_priority"] = vendor_priorities.get(vendor_name, 0)
-        match["is_preferred_vendor"] = vendor_name.lower() in [
-            p.lower() for p in (strategy_context.get("preferred_vendors", []) if strategy_context else [])
-        ]
+        match["is_preferred_vendor"] = vendor_name.lower() in preferred_vendors_normalized
         if "requirementsMatch" not in match:
             score = match.get("matchScore", 0)
             match["requirementsMatch"] = score >= 80
@@ -769,7 +781,7 @@ class VendorAnalysisDeepAgent:
             VendorAnalysisDeepAgent._response_cache = get_or_create_cache(
                 name="vendor_analysis_response",
                 max_size=200,           # Max 200 cached results
-                ttl_seconds=1800        # 30 minute TTL
+                ttl_seconds=0           # [FIX Feb 2026] No TTL — persist for session lifetime
             )
 
         logger.info("[VendorAnalysisDeepAgent] Initialized with max_workers=%d", max_workers)
@@ -781,8 +793,7 @@ class VendorAnalysisDeepAgent:
         structured_requirements: Dict[str, Any],
         product_type: str,
         session_id: Optional[str] = None,
-        schema: Optional[Dict[str, Any]] = None,
-        is_standards_enriched: bool = False
+        schema: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Analyze vendors for matching products via the LangGraph Deep Agent.
@@ -803,7 +814,6 @@ class VendorAnalysisDeepAgent:
             product_type: Detected product type
             session_id: Session tracking ID
             schema: Optional product schema
-            is_standards_enriched: Flag indicating if input is pre-enriched (propagated from validation)
 
         Returns:
             {
@@ -850,7 +860,6 @@ class VendorAnalysisDeepAgent:
             "product_type": product_type,
             "structured_requirements": structured_requirements,
             "schema": schema,
-            "is_standards_enriched": is_standards_enriched,
             "tool": self,               # nodes use self._analyze_vendor() etc.
             "components": None,
             "vendors": [],

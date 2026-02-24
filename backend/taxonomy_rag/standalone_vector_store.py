@@ -107,20 +107,28 @@ class PineconeStandaloneStore:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def search(self, collection_type: str, query: str, top_k: int = 5) -> Dict:
+    def search(self, collection_type: str, query: str, top_k: int = 5,
+               filter_metadata: Optional[Dict] = None) -> Dict:
         if getattr(self, '_use_mock', False):
             return {"success": False, "error": "Mock mode active"}
 
         try:
             namespace = self._get_namespace(collection_type)
             query_embedding = self.embeddings.embed_query(query)
-            
-            results = self.index.query(
-                namespace=namespace,
-                vector=query_embedding,
-                top_k=top_k,
-                include_metadata=True
-            )
+
+            # Build query parameters
+            query_params = {
+                "namespace": namespace,
+                "vector": query_embedding,
+                "top_k": top_k,
+                "include_metadata": True
+            }
+
+            # Add metadata filter if provided
+            if filter_metadata:
+                query_params["filter"] = filter_metadata
+
+            results = self.index.query(**query_params)
             
             formatted_results = []
             for match in results.get("matches", []):

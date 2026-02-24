@@ -201,7 +201,6 @@ class SolutionIntentClassifier:
                 )
                 logger.info("[IntentClassifier] Loaded GoogleGenerativeAIEmbeddings (gemini-embedding-001)")
             except Exception as e:
-                logger.warning(f"[IntentClassifier] Could not load embeddings: {e}")
                 self._embeddings_model = None
         return self._embeddings_model
 
@@ -239,7 +238,6 @@ class SolutionIntentClassifier:
                     pass
             return embedding
         except Exception as e:
-            logger.warning(f"[IntentClassifier] Embedding computation failed: {e}")
             return None
 
     def _compute_reference_embeddings(self) -> bool:
@@ -282,7 +280,6 @@ class SolutionIntentClassifier:
             )
             return True
         except Exception as e:
-            logger.warning(f"[IntentClassifier] Context embedding computation failed: {e}")
             return False
 
     @staticmethod

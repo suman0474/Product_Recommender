@@ -2146,7 +2146,9 @@ def agentic_advanced_parameters():
         }
     """
     try:
+        # Use AdvancedSpecificationAgent from upstream search module
         from search.advanced_specification_agent import AdvancedSpecificationAgent
+        discover_advanced_specs = lambda product_type, session_id="default": AdvancedSpecificationAgent().discover(product_type=product_type, session_id=session_id)
 
         data = request.get_json()
 
@@ -2160,9 +2162,8 @@ def agentic_advanced_parameters():
         logger.info(f"[ADVANCED_PARAMS_TOOL] Starting discovery for: {product_type}")
         logger.info(f"[ADVANCED_PARAMS_TOOL] Session: {session_id}")
 
-        # Initialize and run the tool
-        tool = AdvancedSpecificationAgent()
-        result = tool.discover(
+        # Run discovery using simplified function
+        result = discover_advanced_specs(
             product_type=product_type,
             session_id=session_id
         )
@@ -2352,7 +2353,8 @@ def product_search():
 
             # Content
             'sales_agent_response': result.get('response', ''),
-            'schema': schema if ranked_products_list or awaiting else {},
+            # FIX: Always return schema when available (needed for sidebar display)
+            'schema': schema if schema else {},
             'missing_fields': missing_fields,
             'available_advanced_params': advanced_params,
             'provided_requirements': response_data.get('provided_requirements', {}),

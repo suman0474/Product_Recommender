@@ -727,7 +727,7 @@ def classify_identification_input_tool(user_input: str) -> Dict[str, Any]:
 
 
 @tool("extract_advanced_parameters")
-def extract_advanced_specification_agent(
+def extract_advanced_parameters_tool(
     user_input: str,
     product_type: str,
     available_parameters: str
@@ -779,7 +779,7 @@ def get_sales_agent_tools() -> List[BaseTool]:
         classify_user_intent_tool,
         sales_agent_respond_tool,
         extract_additional_requirements_tool,
-        extract_advanced_specification_agent,
+        extract_advanced_parameters_tool,
         handle_feedback_tool
     ]
 
@@ -812,7 +812,7 @@ def get_all_tools() -> List[BaseTool]:
         handle_feedback_tool,
         grounded_knowledge_chat_tool,
         classify_identification_input_tool,
-        extract_advanced_specification_agent
+        extract_advanced_parameters_tool
     ]
 
 
@@ -897,7 +897,7 @@ __all__ = [
     "handle_feedback_tool",
     "grounded_knowledge_chat_tool",
     "classify_identification_input_tool",
-    "extract_advanced_specification_agent",
+    "extract_advanced_parameters_tool",
     
     # Tool collections
     "get_sales_agent_tools",

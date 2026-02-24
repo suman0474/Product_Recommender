@@ -472,7 +472,7 @@ class SpecificationRetriever:
         for idx, item in enumerate(normalized_items):
             item_key = f"item_{idx}"
             canonical_name = item.get("canonical_name", "")
-            original_name = item.get("product_name") or item.get("name") or canonical_name
+            original_name = item.get("product_type") or item.get("product_name") or item.get("name") or canonical_name
             
             if not canonical_name:
                 logger.warning(f"[SpecRetriever] Item {idx} has no canonical_name, skipping")

@@ -1,21 +1,27 @@
 # search/__init__.py
 """
-Product Search Workflow - Tool-Based Architecture
-=================================================
+Product Search Workflow - LangGraph Orchestrated Architecture
+=============================================================
 
-This module provides a tool-based product search workflow with the following components:
+This module provides a LangGraph-orchestrated product search workflow with the following components:
 
-Tools
------
-ValidationTool          -- Step 1: Product type detection, schema generation, validation
-AdvancedSpecificationAgent  -- Step 2: Discover advanced parameters from vendors
-VendorAnalysisDeepAgent -- Step 3: Analyze vendors and match products
-RankingTool            -- Step 4: Rank matched products with detailed analysis
-SalesAgentTool         -- Conversational agent for workflow guidance
+Orchestrator
+------------
+SearchOrchestrator      -- Unified LangGraph workflow coordinating all agents as nodes
+
+Function Modules (Feb 2026 refactor — replaces legacy deep agent files)
+------------------------------------------------------------------------
+validation_functions.py     -- Node 1: Product type detection, schema generation, validation
+advanced_specs_functions.py -- Node 2: Discover advanced parameters from vendors
+VendorAnalysisDeepAgent     -- Node 3: Analyze vendors and match products (9 internal nodes)
+RankingTool                 -- Node 4: Rank matched products with detailed analysis
+
+(ValidationDeepAgent and AdvancedSpecificationAgent are kept as backward-compat aliases)
 
 Workflow Functions
 ------------------
-run_product_search_workflow()     -- Full end-to-end product search
+run_product_search_workflow()     -- Full end-to-end product search (via orchestrator)
+run_search_workflow()             -- Convenience function for orchestrator
 run_validation_only()             -- Run only validation step
 run_advanced_params_only()        -- Run only parameter discovery
 run_analysis_only()               -- Run vendor analysis + ranking
@@ -31,19 +37,66 @@ validate_with_schema()            -- Validate input against schema
 # TOOL CLASSES
 # =============================================================================
 
-from .validation_tool import (
-    ValidationTool,
-    clear_session_enrichment_cache,
+# NEW: Simplified function modules (Feb 2026 refactor) - PRIMARY
+from .validation_functions import (
+    # Core validation functions
+    detect_hitl_response,
+    extract_product_type,
+    load_schema,
+    enrich_schema_with_standards,
+    validate_requirements,
+    generate_hitl_message,
+    run_validation,
+    BARE_MEASUREMENT_FIX,
+    # Session caching
+    cache_session_context,
+    get_session_context,
+    get_session_enrichment,
+    cache_session_enrichment,
     clear_session_cache,
+    clear_session_enrichment_cache,
+    # Request context (thread-local)
     set_request_context,
     get_request_session_id,
     get_request_workflow_thread_id,
-    clear_request_context
+    clear_request_context,
+    # Backward-compat classes
+    ValidationTool,
+    ValidationDeepAgent,
 )
-from .advanced_specification_agent import AdvancedSpecificationAgent
+
+from .advanced_specs_functions import (
+    # Core functions
+    discover_advanced_specs,
+    get_existing_schema_params,
+    check_advanced_specs_cache,
+    discover_advanced_specs_llm,
+    parse_advanced_specs_response,
+    persist_advanced_specs,
+    format_specs_for_display,
+    get_spec_keys,
+    # Backward-compat
+    discover_advanced_parameters,
+    AdvancedSpecificationAgent,
+)
+
+# NEW: Simplified single orchestrator (Feb 2026 refactor)
+from .search_workflow import (
+    SearchWorkflowOrchestrator,
+    SearchWorkflowState,
+    create_search_workflow,
+    run_search_workflow,
+)
 from .vendor_analysis_deep_agent import VendorAnalysisDeepAgent, VendorAnalysisTool
 from .ranking_tool import RankingTool
 from .sales_agent_tool import SalesAgentTool
+
+# Legacy orchestrator (kept for fallback, to be removed in future)
+from .search_orchestration_workflow import (
+    SearchOrchestrator,
+    SearchOrchestrationState,
+    create_search_orchestration_workflow,
+)
 
 # =============================================================================
 # WORKFLOW ORCHESTRATION FUNCTIONS
@@ -79,11 +132,111 @@ def run_product_search_workflow(
     user_decision: Optional[str] = None,
     current_phase: Optional[str] = None,
     source_workflow: Optional[str] = "direct",
-    is_standards_enriched: Optional[bool] = None,
+    use_orchestrator: bool = True,
     **kwargs
 ) -> Dict[str, Any]:
     """
-    Run complete product search workflow (tool-based).
+    Run complete product search workflow via LangGraph orchestrator.
+
+    This function delegates to the SearchOrchestrator which coordinates
+    ValidationTool, discover_advanced_specs, and VendorAnalysisDeepAgent
+    as discrete nodes in a unified LangGraph workflow.
+
+    Args:
+        user_input: User's search query
+        session_id: Session identifier (DEPRECATED - use ctx instead)
+        expected_product_type: Optional product type hint
+        user_provided_fields: User-provided specification fields
+        enable_ppi: Enable Potential Product Index workflow if no schema exists
+        auto_mode: Run automatically without HITL pauses
+        ctx: ExecutionContext for proper session/workflow isolation (preferred)
+        user_decision: User's YES/NO response to HITL prompt
+        current_phase: Frontend-provided phase hint
+        source_workflow: Source workflow identifier
+        use_orchestrator: Use new LangGraph orchestrator (True) or procedural fallback (False)
+        **kwargs: Additional parameters (main_thread_id, parent_workflow_id, etc.)
+
+    Returns:
+        {
+            "success": bool,
+            "response": str,
+            "response_data": {
+                "product_type": str,
+                "schema": dict,
+                "ranked_products": list,
+                "vendor_matches": dict,
+                "missing_fields": list,
+                "awaiting_user_input": bool
+            },
+            "error": str (if failed)
+        }
+
+    Note:
+        [Feb 2026] Now uses LangGraph orchestrator by default.
+        Falls back to procedural implementation on error.
+    """
+    # [FIX Feb 2026] Extract standards_enriched flag from kwargs
+    # When True, search workflow skips redundant standards deep agent enrichment
+    standards_enriched = kwargs.pop("standards_enriched", False)
+
+    if use_orchestrator:
+        try:
+            # NEW: Use simplified SearchWorkflowOrchestrator (Feb 2026 refactor)
+            orchestrator = SearchWorkflowOrchestrator(
+                enable_ppi=enable_ppi,
+                auto_mode=auto_mode
+            )
+            result = orchestrator.run(
+                user_input=user_input,
+                session_id=session_id,
+                expected_product_type=expected_product_type,
+                user_provided_fields=user_provided_fields,
+                auto_mode=auto_mode,
+                user_decision=user_decision,
+                current_phase=current_phase,
+                source_workflow=source_workflow,
+                standards_enriched=standards_enriched,
+                **kwargs
+            )
+            return result
+        except Exception as e:
+            logger.warning(f"[ProductSearch] Orchestrator failed, using procedural fallback: {e}")
+            # Fall through to procedural implementation
+
+    # Procedural implementation (fallback)
+    return _run_product_search_workflow_procedural(
+        user_input=user_input,
+        session_id=session_id,
+        expected_product_type=expected_product_type,
+        user_provided_fields=user_provided_fields,
+        enable_ppi=enable_ppi,
+        auto_mode=auto_mode,
+        ctx=ctx,
+        user_decision=user_decision,
+        current_phase=current_phase,
+        source_workflow=source_workflow,
+        **kwargs
+    )
+
+
+def _run_product_search_workflow_procedural(
+    user_input: str,
+    session_id: str = "",
+    expected_product_type: Optional[str] = None,
+    user_provided_fields: Optional[Dict[str, Any]] = None,
+    enable_ppi: bool = True,
+    auto_mode: bool = True,
+    ctx: Optional["ExecutionContext"] = None,
+    user_decision: Optional[str] = None,
+    current_phase: Optional[str] = None,
+    source_workflow: Optional[str] = "direct",
+    **kwargs
+) -> Dict[str, Any]:
+    """
+    Run complete product search workflow (procedural implementation).
+
+    This is the original procedural implementation kept as fallback.
+    Prefer using run_product_search_workflow() which uses the LangGraph orchestrator.
 
     Args:
         user_input: User's search query
@@ -159,59 +312,13 @@ def run_product_search_workflow(
     # Set thread-local context for this request (enables isolation in nested calls)
     set_request_context(session_id, workflow_thread_id)
 
-    # NEW: Derive is_standards_enriched flag if not explicitly set
-    if is_standards_enriched is None:
-        is_standards_enriched = (source_workflow == "solution_deep_agent")
-
-    # NEW: Derive is_taxonomy_normalized flag if not explicitly set (same logic)
-    is_taxonomy_normalized = (source_workflow == "solution_deep_agent")
-
-    logger.info(
-        f"[ProductSearch] Workflow configuration - "
-        f"source={source_workflow}, is_standards_enriched={is_standards_enriched}, "
-        f"is_taxonomy_normalized={is_taxonomy_normalized}"
-    )
-
-    # ═════════════════════════════════════════════════════════════════════════════
-    # STEP 1: INTENT EXTRACTION (Orchestration Level)
-    # Extract product type BEFORE ValidationDeepAgent for direct user input
-    # ═════════════════════════════════════════════════════════════════════════════
-    if source_workflow == "direct" and not expected_product_type:
-        logger.info("[ProductSearch] ⚙️ Calling intent tool to extract product type...")
-
-        try:
-            from common.tools.intent_tools import extract_requirements_tool
-
-            extract_result = extract_requirements_tool.invoke({
-                "user_input": user_input
-            })
-
-            expected_product_type = extract_result.get("product_type")
-            logger.info(
-                f"[ProductSearch] ✓ Intent tool extracted product type: {expected_product_type}"
-            )
-
-            # Optionally extract other metadata
-            if extract_result.get("category"):
-                logger.info(f"[ProductSearch]   Category: {extract_result.get('category')}")
-
-        except Exception as e:
-            logger.error(f"[ProductSearch] ✗ Intent extraction failed: {e}", exc_info=True)
-            # Continue without product_type - ValidationDeepAgent will handle it
-
-    elif source_workflow == "solution_deep_agent":
-        logger.info(
-            f"[ProductSearch] ⚡ Skipping intent extraction - "
-            f"product type already provided: {expected_product_type}"
-        )
-
     try:
         # =====================================================================
         # FIX: Check if we are waiting for response to advanced specs prompt
         # We check both cached state AND explicit frontend parameters
         # =====================================================================
-        from search.validation_tool import _get_session_context, _cache_session_context
-        cached_context = _get_session_context(session_id) or {}
+        # Using get_session_context and cache_session_context from validation_functions (already imported)
+        cached_context = get_session_context(session_id) or {}
         advanced_specs_presented = cached_context.get("advanced_specs_presented", False)
         hitl_prompt_shown = cached_context.get("hitl_prompt_shown", False)
 
@@ -226,7 +333,7 @@ def run_product_search_workflow(
                 logger.info("[ProductSearch] User declined advanced specs, proceeding directly to analysis")
                 cached_context["advanced_specs_presented"] = False
                 cached_context["hitl_prompt_shown"] = True  # Mark HITL as complete (NOT False!) to skip re-prompting
-                _cache_session_context(session_id, cached_context)
+                cache_session_context(session_id, cached_context)
                 
                 current_schema = cached_context.get("schema")
                 if not current_schema and expected_product_type:
@@ -248,7 +355,7 @@ def run_product_search_workflow(
                     # Reset HITL flags
                     cached_context["hitl_prompt_shown"] = False
                     cached_context["advanced_specs_presented"] = True  # Mark that we're in advanced specs collection
-                    _cache_session_context(session_id, cached_context)
+                    cache_session_context(session_id, cached_context)
 
                     current_schema = cached_context.get("schema")
                     if not current_schema and expected_product_type:
@@ -277,7 +384,7 @@ def run_product_search_workflow(
                 # User provided specifications directly instead of yes/no
                 logger.info("[ProductSearch] User provided advanced specs directly, routing to validation")
                 cached_context["advanced_specs_presented"] = False
-                _cache_session_context(session_id, cached_context)
+                cache_session_context(session_id, cached_context)
                 # Let it fall through to ValidationTool
 
         # =====================================================================
@@ -312,21 +419,20 @@ def run_product_search_workflow(
             }
 
         # Step 1: Validation
+        # NEW: Use simplified run_validation() function (Feb 2026 refactor)
         if not validation_result:
-            validation_tool = ValidationTool()
-            validation_result = validation_tool.validate(
+            validation_result = run_validation(
                 user_input=user_input,
-                expected_product_type=expected_product_type,
                 session_id=session_id,
+                expected_product_type=expected_product_type,
+                enable_ppi=enable_ppi,
                 enable_standards_enrichment=enable_ppi,
-                source_workflow=source_workflow,
-                is_standards_enriched=is_standards_enriched,
-                is_taxonomy_normalized=is_taxonomy_normalized
+                source_workflow=source_workflow
             )
 
         # ═══════════════════════════════════════════════════════════════════════════
         # HANDLE VALIDATION BYPASSED (User said "YES" to HITL prompt)
-        # When validation is bypassed, AdvancedSpecificationAgent already ran inside
+        # When validation is bypassed, advanced_specs may have already ran inside
         # validation_tool. Return the advanced specs and proceed to vendor analysis.
         # ═══════════════════════════════════════════════════════════════════════════
         if validation_result.get("validation_bypassed"):
@@ -369,11 +475,11 @@ def run_product_search_workflow(
             full_response = f"{base_msg}{formatted_params}{prompt_msg}"
 
             # Set flag in session context that advanced specs were presented
-            from search.validation_tool import _get_session_context, _cache_session_context
-            cached_context = _get_session_context(session_id) or {}
+            # Using get_session_context and cache_session_context from validation_functions (already imported)
+            cached_context = get_session_context(session_id) or {}
             cached_context["advanced_specs_presented"] = True
             cached_context["advanced_parameters"] = advanced_params
-            _cache_session_context(session_id, cached_context)
+            cache_session_context(session_id, cached_context)
 
             return {
                 "success": True,
@@ -411,37 +517,64 @@ def run_product_search_workflow(
             }
 
         # ═══════════════════════════════════════════════════════════════════════════
-        # HITL PROMPT FOR VALID RESULTS (when auto_mode=False)
-        # Even when validation passes, ask user if they want to add advanced specs
-        # This ensures the user always gets the YES/NO prompt before vendor analysis
+        # [FIX Feb 2026] Run advanced specs discovery BEFORE showing HITL prompt.
+        # Previously the HITL prompt was shown first, making it meaningless because
+        # the user couldn't see what specs were available.
         # ═══════════════════════════════════════════════════════════════════════════
         
         # Re-fetch cached_context because ValidationTool may have overwritten it
         # for a new product, clearing the stale hitl_prompt_shown state.
-        from search.validation_tool import _get_session_context
-        cached_context = _get_session_context(session_id) or {}
+        # Using get_session_context from validation_functions (already imported)
+        cached_context = get_session_context(session_id) or {}
         
         if not auto_mode and not cached_context.get("hitl_prompt_shown"):
             product_type = validation_result.get("product_type", expected_product_type)
-            hitl_message = validation_result.get("hitl_message")
 
-            # Generate HITL message if not already present
-            if not hitl_message:
-                num_provided = len(validation_result.get("provided_requirements", {}))
+            # [FIX Feb 2026] Run advanced_specs discovery FIRST
+            advanced_params = []
+            try:
+                params_result = discover_advanced_specs(
+                    product_type=product_type,
+                    session_id=session_id
+                )
+                advanced_params = params_result.get("unique_specifications", [])
+                logger.info(f"[ProductSearch] Pre-HITL: Discovered {len(advanced_params)} advanced parameters")
+            except Exception as e:
+                logger.warning(f"[ProductSearch] Pre-HITL: Advanced params discovery failed: {e}")
+
+            # Build HITL message that includes discovered specs
+            num_provided = len(validation_result.get("provided_requirements", {}))
+            if advanced_params:
+                bullets = []
+                for p in advanced_params[:15]:
+                    name = str(p.get("name") or p.get("key", "")).replace("_", " ").title()
+                    bullets.append(f"- {name}")
+                spec_list = "\n".join(bullets)
                 hitl_message = (
-                    f"I've extracted {num_provided} specification(s) for **{product_type}**.\n\n"
-                    f"All required specifications have been provided.\n\n"
-                    f"Would you like to add more advanced specifications for better matching, "
-                    f"or shall I proceed with the search?\n\n"
+                    f"I've extracted {num_provided} specification(s) for **{product_type}** "
+                    f"and discovered {len(advanced_params)} advanced specifications:\n\n"
+                    f"{spec_list}\n\n"
+                    f"Would you like to add any of these advanced specifications to your requirements?\n\n"
                     f"Reply **'YES'** to add advanced specifications, or **'NO'** to continue with the search."
                 )
+            else:
+                hitl_message = validation_result.get("hitl_message")
+                if not hitl_message:
+                    hitl_message = (
+                        f"I've extracted {num_provided} specification(s) for **{product_type}**.\n\n"
+                        f"All required specifications have been provided.\n\n"
+                        f"Would you like to add more advanced specifications for better matching, "
+                        f"or shall I proceed with the search?\n\n"
+                        f"Reply **'YES'** to add advanced specifications, or **'NO'** to continue with the search."
+                    )
 
-            # Mark HITL prompt as shown in cache
+            # Mark HITL prompt as shown in cache (include advanced_parameters)
             cached_context["hitl_prompt_shown"] = True
             cached_context["product_type"] = product_type
             cached_context["schema"] = validation_result.get("schema", {})
             cached_context["provided_requirements"] = validation_result.get("provided_requirements", {})
-            _cache_session_context(session_id, cached_context)
+            cached_context["advanced_parameters"] = advanced_params
+            cache_session_context(session_id, cached_context)
 
             logger.info(f"[ProductSearch] Showing HITL prompt (auto_mode=False): {len(hitl_message)} chars")
 
@@ -453,8 +586,9 @@ def run_product_search_workflow(
                     "schema": validation_result.get("schema", {}),
                     "missing_fields": validation_result.get("missing_fields", []),
                     "provided_requirements": validation_result.get("provided_requirements", {}),
+                    "advanced_parameters": advanced_params,
                     "awaiting_user_input": True,
-                    "current_phase": "await_advanced_selection",
+                    "current_phase": "advanced_specs_discovered",
                     "ranked_products": [],
                     "vendor_matches": {}
                 }
@@ -469,10 +603,10 @@ def run_product_search_workflow(
             provided_requirements.update(user_provided_fields)
 
         # Step 2: Advanced Parameters Discovery (optional)
+        # NEW: Use simplified discover_advanced_specs() function (Feb 2026 refactor)
         advanced_params = []
         try:
-            params_tool = AdvancedSpecificationAgent()
-            params_result = params_tool.discover(
+            params_result = discover_advanced_specs(
                 product_type=product_type,
                 session_id=session_id
             )
@@ -487,8 +621,7 @@ def run_product_search_workflow(
             structured_requirements=provided_requirements,
             product_type=product_type,
             session_id=session_id,
-            schema=schema,
-            is_standards_enriched=is_standards_enriched
+            schema=schema
         )
 
         vendor_matches = vendor_result.get("vendor_matches", {})
@@ -573,6 +706,8 @@ def run_validation_only(
     """
     Run only validation step (product type detection + schema generation).
 
+    NOW USES: run_validation() from validation_functions.py (Feb 2026 refactor)
+
     Args:
         user_input: User's search query
         expected_product_type: Optional product type hint
@@ -592,11 +727,12 @@ def run_validation_only(
     logger.info(f"[ValidationOnly] Session: {session_id}")
 
     try:
-        tool = ValidationTool()
-        result = tool.validate(
+        # NEW: Use simplified run_validation() function
+        result = run_validation(
             user_input=user_input,
-            expected_product_type=expected_product_type,
             session_id=session_id,
+            expected_product_type=expected_product_type,
+            enable_ppi=enable_ppi,
             enable_standards_enrichment=enable_ppi
         )
         return result
@@ -615,30 +751,32 @@ def run_validation_only(
 
 def run_advanced_params_only(
     product_type: str,
-    user_input: str,
+    user_input: str = "",
     session_id: str = "default"
 ) -> Dict[str, Any]:
     """
     Run only advanced parameters discovery.
 
+    NOW USES: discover_advanced_specs() from advanced_specs_functions.py (Feb 2026 refactor)
+
     Args:
         product_type: Product type
-        user_input: User's search query
+        user_input: User's search query (optional, unused in new implementation)
         session_id: Session identifier
 
     Returns:
         {
-            "parameters": list,
-            "count": int
+            "unique_specifications": list,
+            "total_unique_specifications": int,
+            "success": bool
         }
     """
     logger.info(f"[AdvancedParamsOnly] Product: {product_type}, Session: {session_id}")
 
     try:
-        tool = AdvancedSpecificationAgent()
-        result = tool.discover(
+        # NEW: Use simplified discover_advanced_specs() function
+        result = discover_advanced_specs(
             product_type=product_type,
-            user_input=user_input,
             session_id=session_id
         )
         return result
@@ -646,8 +784,9 @@ def run_advanced_params_only(
     except Exception as e:
         logger.exception(f"[AdvancedParamsOnly] Failed: {e}")
         return {
-            "parameters": [],
-            "count": 0,
+            "unique_specifications": [],
+            "total_unique_specifications": 0,
+            "success": False,
             "error": str(e)
         }
 
@@ -657,8 +796,7 @@ def run_analysis_only(
     structured_requirements: Optional[Dict[str, Any]] = None,
     schema: Optional[Dict[str, Any]] = None,
     session_id: str = "default",
-    user_input: Optional[str] = None,
-    is_standards_enriched: bool = False
+    user_input: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Run vendor analysis + ranking (skip validation).
@@ -690,8 +828,7 @@ def run_analysis_only(
             structured_requirements=requirements,
             product_type=product_type,
             session_id=session_id,
-            schema=schema,
-            is_standards_enriched=is_standards_enriched
+            schema=schema
         )
 
         vendor_matches = vendor_result.get("vendor_matches", {})
@@ -763,6 +900,18 @@ def process_from_solution_workflow(
     """
     logger.info(f"[BatchProcess] Processing {len(items)} items for session: {session_id}")
 
+    # [FIX Feb 2026] Detect if Solution workflow already enriched items with standards.
+    # If ANY item has standards_applied=True, set the flag to skip redundant
+    # standards deep agent enrichment in the Search validation workflow.
+    standards_enriched = any(
+        item.get("standards_applied", False) for item in items
+    )
+    if standards_enriched:
+        logger.info(
+            "[BatchProcess] Standards enrichment already applied by Solution workflow — "
+            "search validation will SKIP redundant standards deep agent enrichment"
+        )
+
     results = []
     for idx, item in enumerate(items):
         try:
@@ -774,7 +923,9 @@ def process_from_solution_workflow(
                 user_input=sample_input,
                 session_id=item_session,
                 expected_product_type=product_type,
-                auto_mode=True
+                auto_mode=True,
+                source_workflow="solution",
+                standards_enriched=standards_enriched,
             )
 
             results.append({
@@ -800,24 +951,23 @@ def get_schema_only(
     """
     Get product schema without validation.
 
+    NOW USES: load_schema() from validation_functions.py (Feb 2026 refactor)
+
     Args:
         product_type: Product type
-        session_id: Session identifier
+        session_id: Session identifier (unused in new implementation)
 
     Returns:
         Schema dictionary
     """
     try:
-        tool = ValidationTool()
-        schema = tool.get_schema_only(
-            product_type=product_type,
-            session_id=session_id
-        )
-        return schema
+        # NEW: Use simplified load_schema() function
+        result = load_schema(product_type=product_type, enable_ppi=True)
+        return result
 
     except Exception as e:
         logger.exception(f"[GetSchemaOnly] Failed: {e}")
-        return {}
+        return {"success": False, "schema": {}, "error": str(e)}
 
 
 def validate_with_schema(
@@ -829,28 +979,30 @@ def validate_with_schema(
     """
     Validate user input against provided schema.
 
+    NOW USES: validate_requirements() from validation_functions.py (Feb 2026 refactor)
+
     Args:
         user_input: User's input
         schema: Product schema
         product_type: Product type
-        session_id: Session identifier
+        session_id: Session identifier (unused in new implementation)
 
     Returns:
         Validation result
     """
     try:
-        tool = ValidationTool()
-        result = tool.validate_with_schema(
+        # NEW: Use simplified validate_requirements() function
+        result = validate_requirements(
             user_input=user_input,
-            schema=schema,
             product_type=product_type,
-            session_id=session_id
+            schema=schema
         )
         return result
 
     except Exception as e:
         logger.exception(f"[ValidateWithSchema] Failed: {e}")
         return {
+            "success": False,
             "is_valid": False,
             "error": str(e)
         }
@@ -870,8 +1022,38 @@ run_single_product_workflow = run_product_search_workflow
 # =============================================================================
 
 __all__ = [
-    # Tool classes
+    # NEW: Simplified orchestrator (Feb 2026 refactor)
+    "SearchWorkflowOrchestrator",
+    "SearchWorkflowState",
+    "create_search_workflow",
+    "run_search_workflow",
+
+    # NEW: Simplified validation functions (Feb 2026 refactor)
+    "detect_hitl_response",
+    "extract_product_type",
+    "load_schema",
+    "enrich_schema_with_standards",
+    "validate_requirements",
+    "generate_hitl_message",
+    "run_validation",
+    "cache_session_context",
+    "get_session_context",
+    "BARE_MEASUREMENT_FIX",
+
+    # NEW: Simplified advanced specs functions (Feb 2026 refactor)
+    "discover_advanced_specs",
+    "get_existing_schema_params",
+    "check_advanced_specs_cache",
+    "format_specs_for_display",
+
+    # Legacy orchestrator (kept for backward compatibility)
+    "SearchOrchestrator",
+    "SearchOrchestrationState",
+    "create_search_orchestration_workflow",
+
+    # Backward-compat aliases (ValidationDeepAgent → ValidationTool, AdvancedSpecificationAgent → discover_advanced_specs wrapper)
     "ValidationTool",
+    "ValidationDeepAgent",
     "AdvancedSpecificationAgent",
     "VendorAnalysisDeepAgent",
     "VendorAnalysisTool",
@@ -889,8 +1071,9 @@ __all__ = [
     "get_schema_only",
     "validate_with_schema",
     "clear_session_enrichment_cache",
+    "clear_session_cache",
 
-    # Backward compatibility
+    # Backward compatibility aliases
     "product_search_workflow",
     "run_single_product_workflow",
 ]

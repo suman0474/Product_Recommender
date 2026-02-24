@@ -196,8 +196,8 @@ const MessageRow = memo(({ message, isHistory, renderVendorAnalysisStatus, forma
               transition: "opacity 0.8s ease-out, transform 0.8s cubic-bezier(0.175, 0.885, 0.32, 1.275)"
             }}
           >
-            <div  className="prose prose-invert max-w-none">
-              <ReactMarkdown remarkPlugins={[remarkGfm]} 
+            <div className="prose dark:prose-invert max-w-none">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}
                 components={{
                   a: ({ href, children }) => (
                     <a
