@@ -24,3 +24,5 @@ backend/docs/
 *.zip
 
 .lock
+acli.exe
+backend/log.txt

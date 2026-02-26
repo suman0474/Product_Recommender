@@ -1,13 +1,14 @@
 """
 EnGenie Chat Intent Classification Agent
 
-Classifies user queries to route to appropriate data source:
-- Index RAG (product models, specs, datasheets)
-- Standards RAG (IEC, ISO, API standards, SIL, ATEX)
-- Strategy RAG (vendor priorities, procurement, approved suppliers)
-- Deep Agent (detailed spec extraction from tables/clauses)
+Classifies user queries into intent categories for metadata and logging.
+Classification result is used for:
+- Structured logging/analytics
+- Frontend routing decisions (is_engenie_chat_intent)
+- Keyword fallback scoring when LLM classifier is unavailable
 
-Routes queries to EnGenie Chat page in frontend when relevant.
+The orchestrator no longer routes to RAG sources — all queries go through
+web search → LLM (grounded). Classification is informational only.
 """
 
 import logging
@@ -207,7 +208,7 @@ DEEP_AGENT_KEYWORDS = [
     "tolerance", "tolerances", "allowable", "permissible"
 ]
 
-# 5. Web Search - External/Current Information
+# 5. Web Search Keywords
 WEB_SEARCH_KEYWORDS = [
     # Recency indicators
     "latest", "recent", "current", "newest", "updated",
@@ -235,7 +236,7 @@ WEB_SEARCH_KEYWORDS = [
     "feedback", "experience", "experiences"
 ]
 
-# 5. Solution Design - System/Package Design
+# 6. Solution Design Keywords
 SOLUTION_KEYWORDS = [
     # Design intent
     "design", "designing", "designed",
@@ -262,7 +263,8 @@ SOLUTION_KEYWORDS = [
     "engineering solution", "custom solution"
 ]
 
-# 6. Web Search - External/Current Information
+# =============================================================================
+# CLASSIFICATION PATTERNS
 # =============================================================================
 
 # Patterns that strongly indicate Index RAG (product queries)
@@ -340,8 +342,7 @@ WEB_SEARCH_PATTERNS = [
     r"(search|find).*(online|web|internet)"
 ]
 
-# Patterns indicating hybrid queries (multiple systems needed)
-# These are queries that GENUINELY need data from multiple RAG systems
+# Patterns indicating hybrid queries (multiple classification domains needed)
 HYBRID_PATTERNS = [
     # Product + Standards (e.g., "Is Rosemount 3051S certified for SIL 3?")
     # Asking about a specific product's certification status
@@ -600,49 +601,6 @@ def _fast_path_classify(query_lower: str) -> Optional[Tuple[DataSource, float, s
     return None
 
 
-def classify_by_patterns(query_lower: str) -> Optional[Tuple[DataSource, float, str]]:
-    """
-    Classify query using regex patterns for strong structural indicators.
-    Returns None if no strong pattern match found.
-    """
-    # Check for hybrid patterns first (highest specificity)
-    for pattern in HYBRID_PATTERNS:
-        if re.search(pattern, query_lower):
-            return DataSource.HYBRID, 0.9, f"Hybrid pattern matched: {pattern[:50]}..."
-
-    # Check Deep Agent patterns (specific extraction requests)
-    for pattern in DEEP_AGENT_PATTERNS:
-        if re.search(pattern, query_lower):
-            return DataSource.DEEP_AGENT, 0.9, f"Deep Agent pattern matched"
-
-    # Check Solution Design patterns (system/package design)
-    for pattern in SOLUTION_PATTERNS:
-        if re.search(pattern, query_lower):
-            return DataSource.SOLUTION, 0.9, f"Solution Design pattern matched"
-
-    # Check Web Search patterns (external/current info)
-    for pattern in WEB_SEARCH_PATTERNS:
-        if re.search(pattern, query_lower):
-            return DataSource.WEB_SEARCH, 0.85, f"Web Search pattern matched"
-
-    # Check Standards RAG patterns
-    for pattern in STANDARDS_RAG_PATTERNS:
-        if re.search(pattern, query_lower):
-            return DataSource.STANDARDS_RAG, 0.9, f"Standards pattern matched"
-
-    # Check Strategy RAG patterns
-    for pattern in STRATEGY_RAG_PATTERNS:
-        if re.search(pattern, query_lower):
-            return DataSource.STRATEGY_RAG, 0.9, f"Strategy pattern matched"
-
-    # Check Index RAG patterns
-    for pattern in INDEX_RAG_PATTERNS:
-        if re.search(pattern, query_lower):
-            return DataSource.INDEX_RAG, 0.85, f"Product pattern matched"
-
-    return None
-
-
 def _calculate_keyword_scores(query_lower: str) -> Tuple[Dict[DataSource, float], Dict[DataSource, List[str]]]:
     """
     Calculate weighted keyword scores for each data source.
@@ -762,38 +720,6 @@ def _detect_hybrid_pattern(query_lower: str) -> bool:
 
 
 # =============================================================================
-# HYBRID QUERY HANDLING
-# =============================================================================
-
-def get_sources_for_hybrid(query: str) -> List[DataSource]:
-    """
-    Get list of sources to query for hybrid requests.
-
-    Returns sources that have relevance to the query, ordered by relevance.
-    """
-    query_lower = query.lower().strip()
-    sources = []
-    source_scores = {}
-
-    # Calculate relevance score for each source
-    scores, _ = _calculate_keyword_scores(query_lower)
-
-    for source, score in scores.items():
-        if score > 0:
-            sources.append(source)
-            source_scores[source] = score
-
-    # Sort by score (highest first)
-    sources.sort(key=lambda s: source_scores.get(s, 0), reverse=True)
-
-    # Ensure at least Index RAG is included as fallback
-    if not sources:
-        sources = [DataSource.INDEX_RAG]
-
-    return sources
-
-
-# =============================================================================
 # PRODUCT INFO PAGE ROUTING (Frontend Integration)
 # =============================================================================
 
@@ -885,19 +811,13 @@ def get_engenie_chat_route_decision(query: str) -> Dict:
         - sources: List[str] - all relevant sources for hybrid
         - reasoning: str - explanation for the decision
     """
-    query_lower = query.lower().strip()
-
     # Get classification
     data_source, confidence, reasoning = classify_query(query)
 
     # Determine if should route to EnGenie Chat
     should_route, route_confidence = is_engenie_chat_intent(query)
 
-    # Get sources for hybrid queries
-    if data_source == DataSource.HYBRID:
-        sources = [s.value for s in get_sources_for_hybrid(query)]
-    else:
-        sources = [data_source.value] if data_source != DataSource.LLM else []
+    sources = [data_source.value] if data_source != DataSource.LLM else []
 
     return {
         "should_route": should_route,
@@ -921,155 +841,6 @@ def _get_query_type_description(data_source: DataSource) -> str:
         DataSource.LLM: "General Query"
     }
     return descriptions.get(data_source, "Unknown Query Type")
-
-
-# =============================================================================
-# FOLLOW-UP QUERY DETECTION (Memory Support)
-# =============================================================================
-
-# Pronouns and references that indicate follow-up queries
-FOLLOW_UP_INDICATORS = [
-    "it", "its", "they", "their", "them", "this", "that", "these", "those",
-    "the same", "same one", "that one", "the one",
-    "also", "too", "as well", "in addition",
-    "more about", "more details", "tell me more",
-    "what about", "how about", "and what",
-    "do they", "can they", "does it", "can it"
-]
-
-
-def is_follow_up_query(query: str) -> bool:
-    """
-    Detect if query is a follow-up that requires context resolution.
-
-    Returns True if query contains pronouns or references that need
-    to be resolved from conversation history.
-    """
-    query_lower = query.lower().strip()
-
-    # Check for follow-up indicators
-    for indicator in FOLLOW_UP_INDICATORS:
-        if indicator in query_lower:
-            # Make sure it's at word boundary
-            pattern = r'\b' + re.escape(indicator) + r'\b'
-            if re.search(pattern, query_lower):
-                return True
-
-    # Check for question starting with follow-up patterns
-    follow_up_starts = [
-        r"^what about",
-        r"^how about",
-        r"^and (what|how|does|do|can|is)",
-        r"^does it",
-        r"^do they",
-        r"^can it",
-        r"^is it",
-        r"^are they"
-    ]
-
-    for pattern in follow_up_starts:
-        if re.search(pattern, query_lower):
-            return True
-
-    return False
-
-
-# =============================================================================
-# BATCH CLASSIFICATION (Multi-Question Support)
-# =============================================================================
-
-def classify_questions_batch(
-    questions: list,
-    use_extracted_hints: bool = True
-) -> list:
-    """
-    Classify multiple questions in batch for multi-question inputs.
-
-    Uses pre-extracted context hints from question splitter to optimize routing.
-    Falls back to full classification when hints are not available.
-
-    Args:
-        questions: List of ParsedQuestion objects from question splitter
-        use_extracted_hints: If True, use extracted context (refinery, product_type)
-                           to optimize classification
-
-    Returns:
-        List of tuples: (ParsedQuestion, DataSource, confidence, reasoning)
-    """
-    results = []
-
-    for question in questions:
-        context = getattr(question, 'extracted_context', {}) or {}
-
-        # Use hints if available and enabled
-        if use_extracted_hints and context:
-            is_strategy = context.get('is_strategy_question', False)
-            is_standards = context.get('is_standards_question', False)
-            refinery = context.get('refinery')
-            product_type = context.get('product_type')
-            standards_mentioned = context.get('standards_mentioned', [])
-
-            # Fast path: clear Strategy RAG indication
-            if is_strategy and refinery:
-                results.append((
-                    question,
-                    DataSource.STRATEGY_RAG,
-                    0.95,
-                    f"[Hint] Strategy question with refinery: {refinery}, product: {product_type or 'general'}"
-                ))
-                continue
-
-            # Fast path: clear Standards RAG indication
-            if is_standards and standards_mentioned:
-                results.append((
-                    question,
-                    DataSource.STANDARDS_RAG,
-                    0.90,
-                    f"[Hint] Standards question mentioning: {', '.join(standards_mentioned)}"
-                ))
-                continue
-
-        # Full classification for ambiguous or non-hinted questions
-        query_text = getattr(question, 'cleaned_text', None) or str(question)
-        source, confidence, reasoning = classify_query(query_text)
-
-        results.append((question, source, confidence, reasoning))
-
-    logger.info(f"[INTENT] Batch classified {len(questions)} questions")
-
-    return results
-
-
-def get_classification_summary(classifications: list) -> dict:
-    """
-    Get summary of batch classification results.
-
-    Args:
-        classifications: Result from classify_questions_batch()
-
-    Returns:
-        Dict with counts per source and routing groups
-    """
-    summary = {
-        "total": len(classifications),
-        "by_source": {},
-        "questions_per_source": {}
-    }
-
-    for question, source, confidence, reasoning in classifications:
-        source_name = source.value
-        if source_name not in summary["by_source"]:
-            summary["by_source"][source_name] = 0
-            summary["questions_per_source"][source_name] = []
-
-        summary["by_source"][source_name] += 1
-        summary["questions_per_source"][source_name].append({
-            "question_number": getattr(question, 'question_number', 0),
-            "text": getattr(question, 'cleaned_text', str(question))[:50],
-            "confidence": confidence
-        })
-
-    return summary
 
 
 # =============================================================================
@@ -1123,7 +894,11 @@ def test_classification(queries: List[str] = None) -> List[Dict]:
 
         source, confidence, reasoning = classify_query(query)
         should_route, route_confidence = is_engenie_chat_intent(query)
-        is_followup = is_follow_up_query(query)
+        try:
+            from .engenie_chat_memory import is_follow_up_query
+            is_followup = is_follow_up_query(query, session_id="test")
+        except Exception:
+            is_followup = False
 
         result = {
             "query": query,
@@ -1152,14 +927,9 @@ def test_classification(queries: List[str] = None) -> List[Dict]:
 __all__ = [
     'DataSource',
     'classify_query',
-    'get_sources_for_hybrid',
     'is_engenie_chat_intent',
     'get_engenie_chat_route_decision',
-    'is_follow_up_query',
     'test_classification',
-    # Multi-question batch classification
-    'classify_questions_batch',
-    'get_classification_summary',
     # Keyword lists (for external inspection)
     'INDEX_RAG_KEYWORDS',
     'STANDARDS_RAG_KEYWORDS',

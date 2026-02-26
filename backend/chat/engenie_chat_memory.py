@@ -1,8 +1,8 @@
 """
 EnGenie Chat Memory Module
 
-Session-based conversation memory for EnGenie Chat RAG.
-Handles follow-up resolution and query context.
+Session-based conversation memory for EnGenie Chat.
+Handles follow-up detection, context resolution, and session lifecycle.
 """
 
 import logging

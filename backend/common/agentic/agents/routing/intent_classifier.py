@@ -706,13 +706,16 @@ class IntentClassificationRoutingAgent:
             WorkflowRoutingResult with target workflow and details
         """
         start_time = datetime.now()
-        
+
         logger.info(f"[{self.name}] Classifying: '{query[:80]}...' (session: {session_id[:8]}...)")
 
         # =====================================================================
         # STEP 1: CHECK FOR EXPRESS EXIT & CONVERSATIONAL PATTERNS
+        # Cache exit check — same query string used in 3 subsequent guards,
+        # no state changes between them, LLM is deterministic (temperature=0.0)
         # =====================================================================
-        if should_exit_workflow(query):
+        _exit_detected = should_exit_workflow(query)
+        if _exit_detected:
             self._memory.clear_workflow(session_id)
             logger.info(f"[{self.name}] Exit detected - clearing workflow state")
             # Proceed to classify as a fresh query
@@ -767,12 +770,12 @@ class IntentClassificationRoutingAgent:
         current_workflow = self._memory.get_workflow(session_id)
         
         # If no backend state but valid hint from frontend, restore it
-        if not current_workflow and workflow_hint and not should_exit_workflow(query):
+        if not current_workflow and workflow_hint and not _exit_detected:
             logger.info(f"[{self.name}] Restoring workflow from frontend hint: {workflow_hint}")
             current_workflow = workflow_hint
             self._memory.set_workflow(session_id, current_workflow)
-        
-        if current_workflow and not should_exit_workflow(query):
+
+        if current_workflow and not _exit_detected:
             # FIX: Differentiate between main interface sessions and dedicated workflow sessions
             # Main interface sessions (e.g., "main_Daman_DEFAULT") should allow free workflow switching
             # Dedicated workflow sessions (e.g., "engenie_chat_1234567890") should stay locked

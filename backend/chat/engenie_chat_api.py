@@ -1,15 +1,15 @@
 """
-Product Info API
+EnGenie Chat API
 
-Unified API endpoint for EnGenie Chat queries with intelligent routing
-to Index RAG, Standards RAG, Strategy RAG, and Deep Agent.
+Endpoint for EnGenie Chat queries. Routes all queries through the
+orchestrator (web search → LLM grounded response).
 """
 
 import re
 import logging
 from flask import Blueprint, request, jsonify, session
 
-from .engenie_chat_orchestrator import run_multi_question_query
+from .engenie_chat_orchestrator import run_engenie_chat_query
 from .engenie_chat_memory import (
     get_session_summary, clear_session, cleanup_expired_sessions
 )
@@ -47,31 +47,28 @@ def _sanitize_markdown(text: str) -> str:
 engenie_chat_bp = Blueprint('engenie_chat', __name__, url_prefix='/api/engenie-chat')
 
 
-# Note: login_required is now imported from auth_decorators module
-
-
 @engenie_chat_bp.route('/query', methods=['POST'])
 @login_required
 def query_endpoint():
     """
     Main query endpoint for EnGenie Chat.
-    
+
     Request:
         {
             "query": "What is Rosemount 3051S?",
             "session_id": "optional_session_id"
         }
-        
+
     Response:
         {
             "success": true,
             "answer": "The Rosemount 3051S is...",
-            "source": "database" | "llm",
-            "found_in_database": true,
-            "awaiting_confirmation": false,
-            "sources_used": ["index_rag", "standards_rag"],
-            "results_count": 5,
-            "metadata": {...}
+            "source": "llm",
+            "found_in_database": false,
+            "sources_used": ["llm", "web_search"],
+            "results_count": 2,
+            "is_follow_up": false,
+            "note": ""
         }
     """
     try:
@@ -83,7 +80,6 @@ def query_endpoint():
                 'answer': 'Please provide a query.'
             }), 400
         
-        
         query = data.get('query', '').strip()
         if not query:
             return jsonify({
@@ -91,69 +87,17 @@ def query_endpoint():
                 'error': 'Query is required',
                 'answer': 'Please enter your question.'
             }), 400
-        
-        
-        # ============================================================================
-        # PHASE 2: BACKEND ENDPOINT GUARD - DISABLED
-        # OUT_OF_DOMAIN blocking has been disabled to allow all queries through
-        # ============================================================================
-        # from common.validators import validate_query_domain, create_rejection_response
-        # 
-        # session_id = data.get('session_id', 'default')
-        # 
-        # # Validate query domain (NEVER raises exceptions)
-        # validation_result = validate_query_domain(
-        #     query=query,
-        #     session_id=session_id,
-        #     context={}
-        # )
-        # 
-        # # Block OUT_OF_DOMAIN queries with HTTP 400 and helpful message
-        # if not validation_result.is_valid:
-        #     logger.info(
-        #         f"[ENGENIE_CHAT_API] OUT_OF_DOMAIN blocked: {query[:50]}... "
-        #         f"(confidence: {validation_result.confidence:.2f})"
-        #     )
-        #     # Return standardized rejection response
-        #     return jsonify(create_rejection_response(
-        #         validation_result,
-        #         include_reasoning=True  # Include reasoning for debugging
-        #     )), 400  # HTTP 400 Bad Request (NOT 500!)
-        # 
-        # # Log valid query with classification info
-        # logger.info(
-        #     f"[ENGENIE_CHAT_API] Valid query: {query[:50]}... "
-        #     f"(workflow: {validation_result.target_workflow}, confidence: {validation_result.confidence:.2f})"
-        # )
-        
+
         # Get or generate session ID
         session_id = data.get('session_id') or session.get('engenie_chat_session_id')
         if not session_id:
             session_id = f"ec_{session.get('user_id', 'anon')}_{id(request)}"
             session['engenie_chat_session_id'] = session_id
 
-        # ============================================================================
-        # SAFETY CHECK: Detect if this is a solution query that was misrouted
-        # If pre_classification is passed, use it to avoid redundant classification
-        # ============================================================================
-        pre_classification = data.get('pre_classification', {})
-        if pre_classification.get('target_workflow') == 'solution':
-            logger.warning(
-                f"[ENGENIE_CHAT_API] Solution query misrouted to EnGenie Chat! "
-                f"Query should go to Solution Workflow. Returning redirect suggestion."
-            )
-            return jsonify({
-                'success': False,
-                'error': 'misrouted_query',
-                'answer': 'This appears to be a solution design query. Please use the Solution Workflow for complex engineering challenges.',
-                'suggested_workflow': 'solution',
-                'redirect': True
-            }), 400
-
         logger.info(f"[ENGENIE_CHAT_API] Query from session {session_id}: {query[:100]}...")
 
-        # Run the orchestrated query (handles both single and multi-question inputs)
-        result = run_multi_question_query(
+        # Run the orchestrated query
+        result = run_engenie_chat_query(
             query=query,
             session_id=session_id
         )
@@ -164,7 +108,7 @@ def query_endpoint():
             'answer': _sanitize_markdown(result.get('answer', '')),
             'source': result.get('source', 'unknown'),
             'found_in_database': result.get('found_in_database', False),
-            'awaiting_confirmation': False,  # Reserved for LLM fallback confirmation
+            'awaiting_confirmation': False,
             'sources_used': result.get('sources_used', []),
             'results_count': len(result.get('sources_used', [])),
             'is_follow_up': result.get('is_follow_up', False),
@@ -172,19 +116,9 @@ def query_endpoint():
             'note': ''
         }
 
-        # Add multi-question specific fields if present
-        if result.get('is_multi_question', False):
-            response['is_multi_question'] = True
-            response['question_count'] = result.get('question_count', 0)
-            response['results'] = result.get('results', [])
-            response['successful_count'] = result.get('successful_count', 0)
-            response['failed_count'] = result.get('failed_count', 0)
-            response['total_processing_time_ms'] = result.get('total_processing_time_ms', 0)
-            response['note'] = f"Processed {result.get('question_count', 0)} questions using: {', '.join(response['sources_used'])}"
-        else:
-            # Single question - add note if multiple sources used
-            if len(response['sources_used']) > 1:
-                response['note'] = f"Combined information from: {', '.join(response['sources_used'])}"
+        # Add note if multiple sources used
+        if len(response['sources_used']) > 1:
+            response['note'] = f"Combined information from: {', '.join(response['sources_used'])}"
 
         return jsonify(response)
         
